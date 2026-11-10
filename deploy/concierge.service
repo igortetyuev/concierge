@@ -1,0 +1,17 @@
+[Unit]
+Description=Concierge server
+After=network-online.target postgresql.service qdrant.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=appuser
+WorkingDirectory=/srv/concierge/app/server
+EnvironmentFile=/etc/concierge/.env
+ExecStart=/srv/concierge/app/server/.venv/bin/uvicorn concierge.api.app:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+MemoryMax=1.2G
+
+[Install]
+WantedBy=multi-user.target

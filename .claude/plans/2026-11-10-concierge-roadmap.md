@@ -7,14 +7,14 @@ Python-сервер (FastAPI + PydanticAI + PostgreSQL + Qdrant на box) с р�
 id: concierge-roadmap
 title: Семейный агент-консьерж — дорожная карта (планы 0–11)
 planned: 2026-11-10
-status: ready
+status: in_progress
 depends_on: []
 conflicts_with: []
 touches:
   - "**"            # greenfield: репозиторий ~/projects/concierge пуст
-claimed_by: null
+claimed_by: null    # план 0 done 2026-11-10; статусы планов — в их секциях ниже
 claimed_at: null
-finished_at: null
+finished_at: null   # umbrella: done когда будут done планы 0–11
 blocked_reason: null
 ---
 ```
@@ -105,6 +105,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 Выполнять последовательно; каждый план — отдельная сессия реализации. Документ сохраняется как `.claude/plans/2026-11-10-concierge-roadmap.md`; при желании каждый план выделяется в файл `.claude/plans/…-concierge-NN-<slug>.md` с `depends_on` на предыдущий.
 
 ### План 0 — Скелет репозитория и инфраструктура на box
+
+**Status: done — 2026-11-10, devin-desktop/main.**
 
 1. Монорепо `concierge/`: `server/` (uv, `pyproject.toml` с ruff/mypy/pytest, `src/concierge/…`), `web/` (pnpm, Vite), `deploy/` (systemd unit, Caddyfile, скрипты), `AGENTS.md` с командами проверки.
 2. Пакеты сервера: `concierge.core`, `concierge.auth`, `concierge.settings`, `concierge.conversations`, `concierge.channels` (web, telegram), `concierge.agent`, `concierge.memory`, `concierge.media`, `concierge.documents`, `concierge.codeagent`, `concierge.api`, `concierge.ws`.
