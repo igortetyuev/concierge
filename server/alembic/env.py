@@ -5,6 +5,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from concierge.core import models as _models  # noqa: F401  (register tables)
 from concierge.core.config import get_settings
 from concierge.core.db import Base
 

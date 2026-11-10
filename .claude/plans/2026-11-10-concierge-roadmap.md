@@ -117,6 +117,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 1 — Пользователи, роли, авторизация, настройки
 
+**Status: done — 2026-11-10, devin-desktop/main.**
+
 1. Миграция: `users`, `roles`, `invites`, `devices`, `settings`, `model_providers`, `capability_bindings`, `mcp_servers`, `code_agents`. Сид ролей.
 2. CLI `concierge bootstrap-admin`.
 3. Auth API: `POST /auth/login`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `GET/DELETE /auth/devices`; `POST /invites` (admin) → `POST /auth/register?token=`.

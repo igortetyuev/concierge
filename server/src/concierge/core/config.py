@@ -11,6 +11,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://concierge@127.0.0.1:5432/concierge"
     qdrant_url: str = "http://127.0.0.1:6333"
 
+    # Fernet key for encrypting secrets stored in `settings` (generate: `uv run python -c
+    # "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+    secret_key: str = ""
+    # HMAC key for signing access JWTs. MUST be overridden in production env.
+    jwt_secret: str = "concierge-dev-insecure-jwt-secret-change-me"
+
+    access_token_ttl_seconds: int = 900
+    refresh_token_ttl_days: int = 30
+    invite_ttl_hours: int = 72
+    cookie_secure: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -3,7 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from concierge.api.admin import router as admin_router
+from concierge.api.auth import router as auth_router
 from concierge.api.health import router as health_router
+from concierge.api.settings import router as settings_router
 from concierge.core.db import dispose_engine
 
 
@@ -16,6 +19,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="concierge", lifespan=lifespan)
     app.include_router(health_router)
+    app.include_router(auth_router)
+    app.include_router(settings_router)
+    app.include_router(admin_router)
     return app
 
 
