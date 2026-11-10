@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from concierge.auth import security
 from concierge.auth.models import Device, Invite, Role, User
 from concierge.core.config import get_settings
+from concierge.core.db import utcnow
 
 
 async def authenticate(
@@ -60,7 +61,7 @@ async def rotate_refresh_token(
         return None
     new_token = security.new_refresh_token()
     device.refresh_token_hash = security.hash_token(new_token)
-    device.last_seen_at = datetime.now(UTC)
+    device.last_seen_at = utcnow()
     await session.commit()
     return user, device, new_token
 
@@ -74,7 +75,7 @@ async def revoke_refresh_token(session: AsyncSession, refresh_token: str) -> Non
         )
     ).scalar_one_or_none()
     if device is not None and device.revoked_at is None:
-        device.revoked_at = datetime.now(UTC)
+        device.revoked_at = utcnow()
         await session.commit()
 
 
@@ -88,8 +89,7 @@ async def create_invite(
         token_hash=security.hash_token(token),
         role_id=role_id,
         created_by=created_by,
-        expires_at=datetime.now(UTC)
-        + timedelta(hours=get_settings().invite_ttl_hours),
+        expires_at=utcnow() + timedelta(hours=get_settings().invite_ttl_hours),
     )
     session.add(invite)
     await session.commit()

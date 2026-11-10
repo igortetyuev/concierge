@@ -1,4 +1,17 @@
 box {
 	tls internal
-	reverse_proxy 127.0.0.1:8000
+
+	# API + WebSocket: /api/* -> app root (e.g. /api/auth/login -> /auth/login)
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# PWA static build (deploy/deploy.sh rsyncs web/dist here), SPA fallback
+	handle {
+		root * /srv/concierge/app/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	encode zstd gzip
 }

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -9,6 +9,7 @@ from concierge.auth import security, service
 from concierge.auth.dependencies import CurrentUser, SessionDep, require
 from concierge.auth.models import Device, Invite, User
 from concierge.core.config import get_settings
+from concierge.core.db import utcnow
 
 router = APIRouter()
 
@@ -23,7 +24,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
-        path="/auth",
+        path="/",
         max_age=settings.refresh_token_ttl_days * 86400,
     )
 
@@ -94,7 +95,7 @@ async def logout(request: Request, response: Response, session: SessionDep) -> d
     token = request.cookies.get(REFRESH_COOKIE)
     if token:
         await service.revoke_refresh_token(session, token)
-    response.delete_cookie(REFRESH_COOKIE, path="/auth")
+    response.delete_cookie(REFRESH_COOKIE, path="/")
     return {"ok": True}
 
 
@@ -140,7 +141,7 @@ async def revoke_device(
     if device is None or device.user_id != user.id:
         raise HTTPException(404, "device not found")
     if device.revoked_at is None:
-        device.revoked_at = datetime.now(UTC)
+        device.revoked_at = utcnow()
         await session.commit()
     return {"ok": True}
 

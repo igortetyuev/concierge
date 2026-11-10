@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
@@ -24,6 +25,11 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 def json_serializer(obj: Any) -> str:
     """ensure_ascii=False keeps Cyrillic searchable via LIKE on sqlite."""
     return json.dumps(obj, ensure_ascii=False)
+
+
+def utcnow() -> datetime:
+    """Naive UTC now — ORM columns are TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def get_engine() -> AsyncEngine:

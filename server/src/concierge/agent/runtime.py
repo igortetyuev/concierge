@@ -1,7 +1,6 @@
 import asyncio
 import dataclasses
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from pydantic_ai import Agent, AgentRunResultEvent
@@ -31,7 +30,7 @@ from concierge.conversations.models import (
     Message,
     Run,
 )
-from concierge.core.db import get_sessionmaker
+from concierge.core.db import get_sessionmaker, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ class AgentRuntime:
                 trigger_message_id=trigger.id,
                 status="running",
                 model=bound.label if bound else None,
-                started_at=datetime.now(UTC),
+                started_at=utcnow(),
             )
             session.add(run)
             await session.commit()
@@ -270,7 +269,7 @@ class AgentRuntime:
             run = await session.get(Run, run_id)
             if run is not None:
                 run.status = status
-                run.finished_at = datetime.now(UTC)
+                run.finished_at = utcnow()
                 if usage is not None:
                     run.usage = usage
                 run.error = error

@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import String, cast, func, literal_column, select
@@ -11,6 +10,7 @@ from concierge.conversations.models import (
     ConversationMember,
     Message,
 )
+from concierge.core.db import utcnow
 
 
 async def create_conversation(
@@ -94,7 +94,7 @@ async def update_conversation(
         conv.reply_mode = reply_mode
     if status is not None and status != conv.status:
         conv.status = status
-        conv.archived_at = datetime.now(UTC) if status == "archived" else None
+        conv.archived_at = utcnow() if status == "archived" else None
     await session.commit()
     await session.refresh(conv)
     return conv
@@ -177,7 +177,7 @@ async def post_message(
         client_msg_id=client_msg_id,
     )
     session.add(msg)
-    conv.updated_at = datetime.now(UTC)
+    conv.updated_at = utcnow()
     member = await session.get(ConversationMember, (conv.id, author.id))
     if member is not None:
         member.last_read_seq = next_seq
@@ -231,7 +231,7 @@ async def post_assistant_message(
         run_id=run_id,
     )
     session.add(msg)
-    conv.updated_at = datetime.now(UTC)
+    conv.updated_at = utcnow()
     await session.commit()
     await session.refresh(msg)
     return msg

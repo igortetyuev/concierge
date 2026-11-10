@@ -46,7 +46,8 @@ sudo -n mkdir -p /srv/concierge/app /srv/concierge/blobs /etc/concierge
 sudo -n chown -R appuser:appuser /srv/concierge
 if ! sudo -n test -f /etc/concierge/.env; then
     DBPASS="$(openssl rand -hex 16)"
-    printf 'CONCIERGE_DATABASE_URL=postgresql+asyncpg://concierge:%s@127.0.0.1:5432/concierge\nCONCIERGE_QDRANT_URL=http://127.0.0.1:6333\n' "$DBPASS" \
+    printf 'CONCIERGE_DATABASE_URL=postgresql+asyncpg://concierge:%s@127.0.0.1:5432/concierge\nCONCIERGE_QDRANT_URL=http://127.0.0.1:6333\nCONCIERGE_JWT_SECRET=%s\nCONCIERGE_COOKIE_SECURE=true\n' \
+        "$DBPASS" "$(openssl rand -hex 32)" \
         | sudo -n tee /etc/concierge/.env >/dev/null
     sudo -n -u postgres psql -c "ALTER USER concierge WITH PASSWORD '${DBPASS}'"
 fi

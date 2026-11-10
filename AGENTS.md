@@ -19,8 +19,12 @@ uv run pytest
 ```bash
 cd web
 pnpm install
+pnpm lint
 pnpm build
 ```
+
+PWA: API проксируется с `/api` (dev/preview — vite proxy на `VITE_API_TARGET`,
+prod — Caddy `handle_path`). Иконки: `node scripts/generate-icons.mjs`.
 
 ## Деплой на box
 
