@@ -5,16 +5,18 @@ import { $detailsOpen } from '../store/ui'
 import ChatView from './ChatView'
 import ConversationList from './ConversationList'
 import DetailsPanel from './DetailsPanel'
+import MemoryView from './MemoryView'
 import { IconChat } from './icons'
 
-export default function Shell() {
+export default function Shell({ view }: { view?: 'memory' }) {
   const { id } = useParams()
   const convId = id ? Number(id) : null
   const detailsOpen = useStore($detailsOpen)
+  const mainOpen = convId !== null || view === 'memory'
 
   return (
     <div
-      className={`shell${convId ? ' has-chat' : ''}${detailsOpen ? ' show-details' : ''}`}
+      className={`shell${mainOpen ? ' has-chat' : ''}${detailsOpen ? ' show-details' : ''}`}
     >
       <aside className="shell-list">
         <ConversationList />
@@ -22,6 +24,8 @@ export default function Shell() {
       <main className="shell-chat">
         {convId ? (
           <ChatView key={convId} convId={convId} />
+        ) : view === 'memory' ? (
+          <MemoryView />
         ) : (
           <div className="chat-empty-state muted">
             <IconChat size={40} />

@@ -17,7 +17,7 @@ import {
 } from '../store/conversations'
 import { messageText } from '../store/messages'
 import NewGroupDialog from './NewGroupDialog'
-import { IconChat, IconLogout, IconPlus, IconSearch, IconUsers } from './icons'
+import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconUsers } from './icons'
 
 export default function ConversationList() {
   const navigate = useNavigate()
@@ -79,6 +79,14 @@ export default function ConversationList() {
         >
           <IconUsers />
         </button>
+        <Link
+          to="/memory"
+          className="icon-btn"
+          title="Память"
+          aria-label="Память"
+        >
+          <IconBook />
+        </Link>
       </header>
 
       <div className="convlist-search">

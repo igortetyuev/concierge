@@ -33,6 +33,7 @@ ROLE_SEEDS = {
         "code_agent": True,
         "telegram": True,
         "voice_quick_session": True,
+        "family_memory": True,
     },
     "child": {
         "settings": {"user": "rw", "global": "r"},

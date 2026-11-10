@@ -93,6 +93,7 @@ class Message(Base):
     source_channel: Mapped[str] = mapped_column(String(16), default="web")
     client_msg_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    indexed_at: Mapped[datetime | None] = mapped_column(index=True)
     # Postgres-only generated column `tsv tsvector` lives in the migration
     # (GENERATED ALWAYS AS to_tsvector('simple', parts)); not mapped here
     # because SQLite has no tsvector.

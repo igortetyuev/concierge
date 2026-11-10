@@ -7,15 +7,19 @@ from concierge.api.admin import router as admin_router
 from concierge.api.auth import router as auth_router
 from concierge.api.conversations import router as conversations_router
 from concierge.api.health import router as health_router
+from concierge.api.memory import router as memory_router
 from concierge.api.settings import router as settings_router
 from concierge.api.users import router as users_router
 from concierge.core.db import dispose_engine
+from concierge.memory import indexer as memory_indexer
 from concierge.ws import router as ws_router
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    memory_indexer.start_worker()
     yield
+    await memory_indexer.stop_worker()
     await dispose_engine()
 
 
@@ -27,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)
     app.include_router(admin_router)
     app.include_router(conversations_router)
+    app.include_router(memory_router)
     app.include_router(ws_router)
     return app
 

@@ -163,6 +163,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 5 — Память (Qdrant): личная и общая
 
+**Status: done — 2026-11-10, devin-desktop/main, finished_at: 2026-11-10.**
+
 1. `EmbeddingService` через capability `embedding`; коллекции с суффиксом модели; payload-индексы.
 2. `memory_items`; инструменты `remember/recall/forget`; запись в `family` — permission.
 3. Фоновый индексатор сообщений (outbox); архивация → саммари → индекс.

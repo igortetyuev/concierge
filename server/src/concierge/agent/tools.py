@@ -5,8 +5,10 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
+from concierge.auth.models import User
 from concierge.conversations import service as conversations
 from concierge.core.db import get_sessionmaker
+from concierge.memory import service as memory_service
 
 
 @dataclass(slots=True)
@@ -45,6 +47,53 @@ def current_datetime() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def remember(
+    ctx: RunContext[ToolDeps], text: str, scope: str = "user"
+) -> dict[str, Any]:
+    """Save a fact to long-term memory.
+
+    scope: "user" — personal to the requester; "family" — shared with the
+    whole family (requires the family_memory permission).
+    """
+    if scope not in ("user", "family"):
+        scope = "user"
+    async with get_sessionmaker()() as session:
+        user = await session.get(User, ctx.deps.user_id)
+        if user is None:
+            return {"error": "user not found"}
+        try:
+            item = await memory_service.remember(
+                session, user, text.strip(), scope
+            )
+        except PermissionError:
+            return {"error": "no permission to write family memory"}
+    return {"id": item.id, "scope": item.scope}
+
+
+async def recall(
+    ctx: RunContext[ToolDeps], query: str, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Search long-term memory (personal + family) for facts about `query`."""
+    async with get_sessionmaker()() as session:
+        user = await session.get(User, ctx.deps.user_id)
+        if user is None:
+            return []
+        return await memory_service.recall(session, user, query, limit)
+
+
+async def forget(ctx: RunContext[ToolDeps], memory_id: int) -> dict[str, Any]:
+    """Delete a memory item by its id (as returned by `recall`)."""
+    async with get_sessionmaker()() as session:
+        user = await session.get(User, ctx.deps.user_id)
+        if user is None:
+            return {"ok": False, "error": "user not found"}
+        try:
+            ok = await memory_service.forget(session, user, int(memory_id))
+        except PermissionError:
+            return {"ok": False, "error": "not allowed"}
+    return {"ok": ok}
+
+
 def message_text(parts: list[dict[str, Any]]) -> str:
     return "\n".join(
         str(p.get("text", "")) for p in parts if p.get("type") == "text"
@@ -52,7 +101,8 @@ def message_text(parts: list[dict[str, Any]]) -> str:
 
 
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
-    f.__name__: f for f in (search_messages, current_datetime)
+    f.__name__: f
+    for f in (search_messages, current_datetime, remember, recall, forget)
 }
 
 

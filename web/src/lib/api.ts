@@ -57,6 +57,16 @@ export interface MessageOut {
   created_at: string | null
 }
 
+export interface MemoryItemOut {
+  id: number
+  scope: 'user' | 'family'
+  owner_id: number | null
+  text: string
+  kind: string
+  source_message_id: number | null
+  created_at: string | null
+}
+
 interface TokenOut {
   access_token: string
   token_type: string
@@ -231,4 +241,10 @@ export const apiClient = {
     post<{ last_read_seq: number }>(`/conversations/${id}/read`, { seq }),
   search: (q: string, limit = 20) =>
     api<MessageOut[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  listMemory: () => api<MemoryItemOut[]>('/memory'),
+  addMemory: (text: string, scope: 'user' | 'family') =>
+    post<MemoryItemOut>('/memory', { text, scope }),
+  deleteMemory: (id: number) =>
+    api<{ ok: boolean }>(`/memory/${id}`, { method: 'DELETE' }),
 }

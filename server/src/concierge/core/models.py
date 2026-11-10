@@ -14,6 +14,7 @@ from concierge.conversations.models import (
     Run,
 )
 from concierge.media.models import Attachment
+from concierge.memory.models import MemoryItem
 from concierge.settings.models import Setting, SettingScope
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "Device",
     "Invite",
     "McpServer",
+    "MemoryItem",
     "Message",
     "ModelProvider",
     "Role",

@@ -17,6 +17,7 @@ dependencies = [
     "cryptography>=50.0.2",
     "pydantic-ai>=1,<2",
     "fastmcp>=3.4,<4",
+    "qdrant-client>=1.12,<2",
 ]
 
 [dependency-groups]

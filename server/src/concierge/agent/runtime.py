@@ -31,6 +31,8 @@ from concierge.conversations.models import (
     Run,
 )
 from concierge.core.db import get_sessionmaker, utcnow
+from concierge.memory import indexer as memory_indexer
+from concierge.memory import service as memory_service
 
 log = logging.getLogger(__name__)
 
@@ -88,8 +90,14 @@ class AgentRuntime:
 
             member_names = await self._member_names(session, conv.id)
             bound = await providers.get_model(session, "chat", user)
+            trigger_text = self._content(
+                trigger.parts, conv, member_names, user.id
+            )
+            memory_block = await memory_service.retrieve_context(
+                session, user, conv, trigger_text
+            )
             instructions = await prompt.system_prompt(
-                session, user, conv, list(member_names.values())
+                session, user, conv, list(member_names.values()), memory_block
             )
             toolsets = await mcp.build_toolsets(session, user)
             funcs = tools.core_tools(user.role.permissions)
@@ -127,7 +135,7 @@ class AgentRuntime:
         usage: dict[str, Any] = {}
         try:
             async with agent, agent.run_stream_events(
-                self._content(trigger.parts, conv, member_names, user.id),
+                trigger_text,
                 message_history=history,
                 deps=deps,
             ) as stream:
@@ -309,6 +317,7 @@ class AgentRuntime:
         await self._hub.publish(
             ChannelEvent("message.created", conversation_id, {"message": out})
         )
+        memory_indexer.kick()
 
     async def _ensure_title(
         self, conversation_id: int, user: User, parts: list[dict[str, Any]]

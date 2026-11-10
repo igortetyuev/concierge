@@ -13,6 +13,7 @@ from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
 from concierge.conversations import service
 from concierge.conversations.models import Conversation, ConversationMember, Message
+from concierge.memory import indexer as memory_indexer
 
 router = APIRouter()
 
@@ -172,6 +173,7 @@ async def patch_conversation(
     conv = await _member_conv_or_404(session, conversation_id, user)
     if not _can_manage(conv, user):
         raise HTTPException(403, "only the owner can modify the conversation")
+    archive = body.status == "archived" and conv.status != "archived"
     conv = await service.update_conversation(
         session,
         conv,
@@ -179,6 +181,8 @@ async def patch_conversation(
         reply_mode=body.reply_mode,
         status=body.status,
     )
+    if archive:
+        memory_indexer.schedule_archive(conv.id)
     out = await _conv_out(session, conv)
     await get_hub().publish(
         ChannelEvent(
@@ -276,6 +280,7 @@ async def post_message(
                 "message.created", conv.id, {"message": out.model_dump(mode="json")}
             )
         )
+        memory_indexer.kick()
         get_runtime().schedule(conv.id, msg.id)
     else:
         response.status_code = 200
