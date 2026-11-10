@@ -1,0 +1,333 @@
+import asyncio
+import dataclasses
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from pydantic_ai import Agent, AgentRunResultEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    RetryPromptPart,
+    TextPart,
+    TextPartDelta,
+    UserPromptPart,
+)
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from concierge.agent import mcp, prompt, providers, title, tools
+from concierge.agent.tools import ToolDeps, message_text
+from concierge.auth.models import User
+from concierge.channels import ChannelEvent, Hub, get_hub
+from concierge.conversations import service as conversations
+from concierge.conversations.models import (
+    Conversation,
+    ConversationMember,
+    Message,
+    Run,
+)
+from concierge.core.db import get_sessionmaker
+
+log = logging.getLogger(__name__)
+
+HISTORY_LIMIT = 100
+
+ERROR_TEXT = "Произошла ошибка при обработке запроса."
+
+
+class AgentRuntime:
+    """Runs the PydanticAI agent for a trigger message; one run per session."""
+
+    def __init__(self, hub: Hub) -> None:
+        self._hub = hub
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def schedule(self, conversation_id: int, trigger_message_id: int) -> None:
+        task = asyncio.create_task(
+            self.maybe_run(conversation_id, trigger_message_id)
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def wait_idle(self) -> None:
+        """Await all currently scheduled runs (tests, graceful shutdown)."""
+        while self._tasks:
+            await asyncio.gather(*self._tasks)
+
+    async def maybe_run(
+        self, conversation_id: int, trigger_message_id: int
+    ) -> None:
+        lock = self._locks.setdefault(conversation_id, asyncio.Lock())
+        if lock.locked():
+            return  # one run per conversation at a time
+        async with lock:
+            try:
+                await self._run(conversation_id, trigger_message_id)
+            except Exception:
+                log.exception("agent run failed conv=%s", conversation_id)
+
+    async def _run(self, conversation_id: int, trigger_message_id: int) -> None:
+        session_maker = get_sessionmaker()
+        async with session_maker() as session:
+            conv = await session.get(Conversation, conversation_id)
+            trigger = await session.get(Message, trigger_message_id)
+            if conv is None or trigger is None or trigger.author_id is None:
+                return
+            user = await session.get(User, trigger.author_id)
+            if user is None or conv.status != "active":
+                return
+            if conv.reply_mode == "mention" and not prompt.is_mentioned(
+                trigger.parts, await prompt.mentions(session, user)
+            ):
+                return
+
+            member_names = await self._member_names(session, conv.id)
+            bound = await providers.get_model(session, "chat", user)
+            instructions = await prompt.system_prompt(
+                session, user, conv, list(member_names.values())
+            )
+            toolsets = await mcp.build_toolsets(session, user)
+            funcs = tools.core_tools(user.role.permissions)
+            history = await self._history(session, conv, trigger, member_names)
+            deps = ToolDeps(user_id=user.id, conversation_id=conv.id)
+
+            run = Run(
+                conversation_id=conv.id,
+                trigger_message_id=trigger.id,
+                status="running",
+                model=bound.label if bound else None,
+                started_at=datetime.now(UTC),
+            )
+            session.add(run)
+            await session.commit()
+            run_id = run.id
+            await self._run_status(conv.id, run_id, "running", model=run.model)
+
+        if bound is None:
+            await self._finish(
+                run_id, conv.id, "failed", error="no chat model bound"
+            )
+            return
+
+        agent = Agent(
+            bound.model,
+            deps_type=ToolDeps,
+            instructions=instructions,
+            tools=funcs,
+            toolsets=toolsets,
+            model_settings=bound.settings,
+        )
+        tool_parts: list[dict[str, Any]] = []
+        output = ""
+        usage: dict[str, Any] = {}
+        try:
+            async with agent, agent.run_stream_events(
+                self._content(trigger.parts, conv, member_names, user.id),
+                message_history=history,
+                deps=deps,
+            ) as stream:
+                async for event in stream:
+                    if isinstance(event, PartDeltaEvent) and isinstance(
+                        event.delta, TextPartDelta
+                    ):
+                        await self._emit(
+                            "message.delta",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "text": event.delta.content_delta,
+                            },
+                        )
+                    elif isinstance(event, FunctionToolCallEvent):
+                        part = {
+                            "type": "tool",
+                            "name": event.part.tool_name,
+                            "tool_call_id": event.part.tool_call_id,
+                            "status": "running",
+                        }
+                        tool_parts.append(part)
+                        await self._emit(
+                            "message.tool", conv.id, {"run_id": run_id, **part}
+                        )
+                    elif isinstance(event, FunctionToolResultEvent):
+                        status = (
+                            "error"
+                            if isinstance(event.part, RetryPromptPart)
+                            else "done"
+                        )
+                        for p in tool_parts:
+                            if p["tool_call_id"] == event.part.tool_call_id:
+                                p["status"] = status
+                        await self._emit(
+                            "message.tool",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "type": "tool",
+                                "name": event.part.tool_name,
+                                "tool_call_id": event.part.tool_call_id,
+                                "status": status,
+                            },
+                        )
+                    elif isinstance(event, AgentRunResultEvent):
+                        output = str(event.result.output)
+                        usage = dataclasses.asdict(event.result.usage)
+        except Exception as exc:
+            log.exception("run %s failed", run_id)
+            await self._finish(run_id, conv.id, "failed", error=str(exc))
+            await self._save_reply(
+                session_maker, conv.id, run_id, ERROR_TEXT, tool_parts
+            )
+            return
+
+        await self._finish(run_id, conv.id, "done", usage=usage)
+        await self._save_reply(
+            session_maker, conv.id, run_id, output, tool_parts
+        )
+        await self._ensure_title(conv.id, user, trigger.parts)
+
+    async def _member_names(
+        self, session: AsyncSession, conversation_id: int
+    ) -> dict[int, str]:
+        rows = (
+            await session.execute(
+                select(ConversationMember.user_id, User.display_name)
+                .join(User, User.id == ConversationMember.user_id)
+                .where(ConversationMember.conversation_id == conversation_id)
+            )
+        ).all()
+        return {uid: name for uid, name in rows}
+
+    async def _history(
+        self,
+        session: AsyncSession,
+        conv: Conversation,
+        trigger: Message,
+        member_names: dict[int, str],
+    ) -> list[ModelMessage]:
+        rows = await conversations.list_messages(
+            session, conv.id, before_seq=trigger.seq, limit=HISTORY_LIMIT
+        )
+        out: list[ModelMessage] = []
+        for m in rows:
+            text = self._content(m.parts, conv, member_names, m.author_id)
+            if not text:
+                continue
+            if m.author_kind == "assistant":
+                out.append(ModelResponse(parts=[TextPart(text)]))
+            else:
+                out.append(ModelRequest(parts=[UserPromptPart(text)]))
+        return out
+
+    @staticmethod
+    def _content(
+        parts: list[dict[str, Any]],
+        conv: Conversation,
+        member_names: dict[int, str],
+        author_id: int | None,
+    ) -> str:
+        chunks = []
+        for p in parts:
+            ptype = p.get("type")
+            if ptype == "text":
+                chunks.append(str(p.get("text", "")))
+            elif ptype != "tool":
+                chunks.append(f"[{ptype or 'attachment'}]")
+        text = "\n".join(c for c in chunks if c)
+        if conv.kind == "group" and author_id is not None:
+            text = f"{member_names.get(author_id, 'unknown')}: {text}"
+        return text
+
+    async def _emit(
+        self, event_type: str, conversation_id: int, data: dict[str, Any]
+    ) -> None:
+        await self._hub.publish(ChannelEvent(event_type, conversation_id, data))
+
+    async def _run_status(
+        self, conversation_id: int, run_id: int, status: str, **extra: Any
+    ) -> None:
+        await self._emit(
+            "run.status",
+            conversation_id,
+            {"run_id": run_id, "status": status, **extra},
+        )
+
+    async def _finish(
+        self,
+        run_id: int,
+        conversation_id: int,
+        status: str,
+        usage: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with get_sessionmaker()() as session:
+            run = await session.get(Run, run_id)
+            if run is not None:
+                run.status = status
+                run.finished_at = datetime.now(UTC)
+                if usage is not None:
+                    run.usage = usage
+                run.error = error
+                await session.commit()
+        await self._run_status(conversation_id, run_id, status, error=error)
+
+    async def _save_reply(
+        self,
+        session_maker: Any,
+        conversation_id: int,
+        run_id: int,
+        text: str,
+        tool_parts: list[dict[str, Any]],
+    ) -> None:
+        async with session_maker() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv is None:
+                return
+            parts = [*tool_parts, {"type": "text", "text": text}]
+            msg = await conversations.post_assistant_message(
+                session, conv, parts, run_id
+            )
+            out = {
+                "id": msg.id,
+                "conversation_id": msg.conversation_id,
+                "seq": msg.seq,
+                "author_kind": msg.author_kind,
+                "author_id": msg.author_id,
+                "parts": msg.parts,
+                "run_id": msg.run_id,
+                "source_channel": msg.source_channel,
+                "client_msg_id": msg.client_msg_id,
+                "created_at": msg.created_at.isoformat()
+                if msg.created_at
+                else None,
+            }
+        await self._hub.publish(
+            ChannelEvent("message.created", conversation_id, {"message": out})
+        )
+
+    async def _ensure_title(
+        self, conversation_id: int, user: User, parts: list[dict[str, Any]]
+    ) -> None:
+        text = message_text(parts)
+        new_title = await title.generate(conversation_id, user, text)
+        if new_title:
+            await self._hub.publish(
+                ChannelEvent(
+                    "conversation.updated",
+                    conversation_id,
+                    {"conversation": {"id": conversation_id, "title": new_title}},
+                )
+            )
+
+
+_runtime = AgentRuntime(get_hub())
+
+
+def get_runtime() -> AgentRuntime:
+    return _runtime

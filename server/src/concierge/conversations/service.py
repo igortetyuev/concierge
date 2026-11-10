@@ -203,6 +203,40 @@ async def post_message(
     return msg, True
 
 
+async def post_assistant_message(
+    session: AsyncSession,
+    conv: Conversation,
+    parts: list[dict[str, Any]],
+    run_id: int | None,
+) -> Message:
+    """Append an assistant (or tool) message produced by an agent run."""
+    await session.execute(
+        select(Conversation.id)
+        .where(Conversation.id == conv.id)
+        .with_for_update()
+    )
+    next_seq = (
+        await session.execute(
+            select(func.coalesce(func.max(Message.seq), 0) + 1).where(
+                Message.conversation_id == conv.id
+            )
+        )
+    ).scalar_one()
+    msg = Message(
+        conversation_id=conv.id,
+        seq=next_seq,
+        author_kind="assistant",
+        author_id=None,
+        parts=parts,
+        run_id=run_id,
+    )
+    session.add(msg)
+    conv.updated_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(msg)
+    return msg
+
+
 async def list_messages(
     session: AsyncSession,
     conversation_id: int,

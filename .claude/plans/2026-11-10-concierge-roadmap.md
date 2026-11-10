@@ -140,6 +140,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 3 — Агентное ядро (PydanticAI), промпт, инструменты, MCP
 
+**Status: done — 2026-11-10, devin-desktop/main.**
+
 1. `concierge.agent.providers`: `get_model(capability, user)` из `model_providers`+`capability_bindings`.
 2. `PromptComposer`: базовый промпт + фрагмент роли + фрагмент пользователя + контекст сессии + блок памяти; собирается один раз на run.
 3. `AgentRuntime.run(conversation, trigger_message)`: история → `Agent.run_stream` → дельты в `ChannelSink` → сохранение; один run на сессию; `reply_mode`.

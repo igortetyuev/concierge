@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from concierge.agent.runtime import get_runtime
 from concierge.auth.dependencies import CurrentUser, SessionDep
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
@@ -275,6 +276,7 @@ async def post_message(
                 "message.created", conv.id, {"message": out.model_dump(mode="json")}
             )
         )
+        get_runtime().schedule(conv.id, msg.id)
     else:
         response.status_code = 200
     return out
