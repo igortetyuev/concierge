@@ -1,4 +1,6 @@
+import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -19,10 +21,17 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
+def json_serializer(obj: Any) -> str:
+    """ensure_ascii=False keeps Cyrillic searchable via LIKE on sqlite."""
+    return json.dumps(obj, ensure_ascii=False)
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().database_url)
+        _engine = create_async_engine(
+            get_settings().database_url, json_serializer=json_serializer
+        )
     return _engine
 
 

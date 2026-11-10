@@ -62,7 +62,11 @@ ROLE_SEEDS = {
 @pytest.fixture
 async def engine() -> AsyncIterator[AsyncEngine]:
     get_settings.cache_clear()
-    eng = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    eng = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        json_serializer=db.json_serializer,
+    )
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     db.set_engine(eng)

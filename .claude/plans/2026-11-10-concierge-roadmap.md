@@ -129,6 +129,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 2 — Сессии, сообщения, реалтайм
 
+**Status: done — 2026-11-10, devin-desktop/main.**
+
 1. Миграция: `conversations` (с `origin`), `conversation_members`, `messages` (+ `source_channel`, GIN на `tsv`), `runs`, `attachments`.
 2. REST: CRUD сессий, членство, архивация, `GET /conversations/{id}/messages?before_seq=`, `GET /search?q=`.
 3. Абстракция `ChannelEvent`/`ChannelSink` в `concierge.channels` — общий вход сообщений и выход событий для web и (позже) Telegram.

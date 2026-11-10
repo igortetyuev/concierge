@@ -7,16 +7,28 @@ from concierge.agent.models import (
     ModelProvider,
 )
 from concierge.auth.models import Device, Invite, Role, User
+from concierge.conversations.models import (
+    Conversation,
+    ConversationMember,
+    Message,
+    Run,
+)
+from concierge.media.models import Attachment
 from concierge.settings.models import Setting, SettingScope
 
 __all__ = [
+    "Attachment",
     "CapabilityBinding",
     "CodeAgent",
+    "Conversation",
+    "ConversationMember",
     "Device",
     "Invite",
     "McpServer",
+    "Message",
     "ModelProvider",
     "Role",
+    "Run",
     "Setting",
     "SettingScope",
     "User",
