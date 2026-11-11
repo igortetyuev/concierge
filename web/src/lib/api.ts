@@ -147,6 +147,7 @@ export interface NamedModelOut {
   model: string
   params: Record<string, unknown>
   system_prompt: string | null
+  tools: string[]
   enabled: boolean
 }
 
@@ -542,6 +543,7 @@ export const apiClient = {
       method: 'DELETE',
     }),
 
+  listNamedModelTools: () => api<string[]>('/admin/named-model-tools'),
   listNamedModels: () => api<NamedModelOut[]>('/admin/named-models'),
   createNamedModel: (body: {
     name: string
@@ -549,6 +551,7 @@ export const apiClient = {
     model: string
     params?: Record<string, unknown>
     system_prompt?: string
+    tools?: string[]
     enabled?: boolean
   }) => post<NamedModelOut>('/admin/named-models', body),
   patchNamedModel: (id: number, patch: Partial<NamedModelOut>) =>

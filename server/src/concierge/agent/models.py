@@ -46,6 +46,7 @@ class NamedModel(Base):
     model: Mapped[str] = mapped_column(String(128))
     params: Mapped[JsonDict] = mapped_column(JSONBType, default=dict)
     system_prompt: Mapped[str | None] = mapped_column(String(2048))
+    tools: Mapped[list[str]] = mapped_column(JSONBType, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
 
     provider: Mapped[ModelProvider] = relationship(lazy="joined")

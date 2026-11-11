@@ -68,6 +68,7 @@ async def _add_named_model(
     params: dict | None = None,
     provider_kind: str = "test",
     enabled: bool = True,
+    tools: list[str] | None = None,
 ) -> None:
     global _provider_seq
     _provider_seq += 1
@@ -83,6 +84,7 @@ async def _add_named_model(
                 provider_id=provider.id,
                 model="test-model",
                 params=params or {},
+                tools=tools or [],
                 enabled=enabled,
             )
         )
@@ -325,6 +327,45 @@ async def test_ask_model_tool_calls_named_model(engine) -> None:
 
     res = await tool(ctx, "лиля", "q")  # type: ignore[arg-type]
     assert "error" in res and res["available"] == ["Алиса"]
+
+
+async def test_ask_model_named_tools(engine) -> None:
+    from types import SimpleNamespace
+
+    from concierge.agent.tools import ToolDeps, make_ask_model_tool
+
+    await _add_named_model(
+        "Алиса",
+        params={
+            "call_tools": ["current_datetime"],
+            "custom_output_text": "ответ Алисы",
+        },
+        tools=["current_datetime"],
+    )
+    user = await make_user("asker_t", "adult")
+    tool = make_ask_model_tool(["Алиса"])
+    ctx = SimpleNamespace(deps=ToolDeps(user_id=user.id, conversation_id=0))
+
+    # Granted tool is registered on the nested agent — the call succeeds.
+    res = await tool(ctx, "Алиса", "q")  # type: ignore[arg-type]
+    assert res == {"model": "Алиса", "answer": "ответ Алисы"}
+
+    # Same model but the checklist is empty: the demanded tool isn't
+    # registered and the nested run fails.
+    await _add_named_model(
+        "Лиля",
+        params={"call_tools": ["current_datetime"]},
+        tools=[],
+    )
+    res = await tool(ctx, "Лиля", "q")  # type: ignore[arg-type]
+    assert "error" in res
+
+    # The checklist can't exceed the caller's role permissions (guest
+    # denies all tools).
+    guest = await make_user("asker_guest", "guest")
+    ctx = SimpleNamespace(deps=ToolDeps(user_id=guest.id, conversation_id=0))
+    res = await tool(ctx, "Алиса", "q")  # type: ignore[arg-type]
+    assert "error" in res
 
 
 async def test_ask_model_exposed_in_run(

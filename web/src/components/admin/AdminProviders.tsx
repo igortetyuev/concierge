@@ -23,22 +23,25 @@ export default function AdminProviders() {
   const [providers, setProviders] = useState<ProviderOut[] | null>(null)
   const [bindings, setBindings] = useState<BindingOut[]>([])
   const [named, setNamed] = useState<NamedModelOut[]>([])
+  const [namedToolNames, setNamedToolNames] = useState<string[]>([])
   const [roles, setRoles] = useState<RoleOut[]>([])
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [error, setError] = useState('')
 
   async function reload() {
     try {
-      const [ps, bs, ns, rs] = await Promise.all([
+      const [ps, bs, ns, rs, ts] = await Promise.all([
         apiClient.listProviders(),
         apiClient.listBindings(),
         apiClient.listNamedModels(),
         apiClient.listRoles(),
+        apiClient.listNamedModelTools(),
       ])
       setProviders(ps)
       setBindings(bs)
       setNamed(ns)
       setRoles(rs)
+      setNamedToolNames(ts)
     } catch {
       setError('Не удалось загрузить провайдеров')
     }
@@ -215,6 +218,9 @@ export default function AdminProviders() {
             {m.system_prompt && (
               <span className="muted"> · {m.system_prompt}</span>
             )}
+            {m.tools.length > 0 && (
+              <span className="muted"> · tools: {m.tools.join(', ')}</span>
+            )}
             {!m.enabled && <span className="muted"> · выключена</span>}
           </span>
           <label className="settings-toggle">
@@ -264,6 +270,7 @@ export default function AdminProviders() {
         <NamedModelDialog
           item={dialog.item}
           providers={providers ?? []}
+          toolNames={namedToolNames}
           onClose={() => setDialog(null)}
           onSaved={reload}
         />

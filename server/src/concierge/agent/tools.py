@@ -4,7 +4,7 @@ import logging
 import re
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from html import unescape
@@ -410,15 +410,26 @@ def make_ask_model_tool(names: list[str]) -> Callable[..., Any]:
                 }
             bound = await providers.bind_named_model(session, user, named)
             system_prompt, display = named.system_prompt, named.name
+            # The named model's tool checklist is additionally limited by
+            # the caller's role permissions.
+            caller_tools = set(allowed_tool_names(user.role.permissions))
+            granted = [
+                n
+                for n in named.tools or []
+                if n in NAMED_MODEL_TOOLS and n in caller_tools
+            ]
         if bound is None:
             return {"error": f"model {display} is unavailable"}
         try:
             agent = Agent(
                 bound.model,
+                deps_type=ToolDeps,
                 instructions=system_prompt,
+                tools=[CORE_TOOLS[n] for n in granted if n in CORE_TOOLS],
+                capabilities=capabilities_for(granted),
                 model_settings=bound.settings,
             )
-            result = await agent.run(question)
+            result = await agent.run(question, deps=ctx.deps)
         except Exception as e:
             log.warning("ask_model(%s) failed: %s", display, e)
             return {"error": f"{display} failed: {e}"}
@@ -453,6 +464,10 @@ CAPABILITY_TOOLS = ("web_search",)
 # the tools.allow/deny lists too.
 DYNAMIC_TOOLS = ("ask_model",)
 
+# Tool names selectable per named model (its `tools` checklist); ask_model
+# itself is excluded — no recursion.
+NAMED_MODEL_TOOLS = tuple(CORE_TOOLS) + CAPABILITY_TOOLS
+
 
 def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
     """Tool/capability names visible to a role under permissions.tools."""
@@ -477,15 +492,19 @@ def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
     return names
 
 
-def allowed_capabilities(permissions: dict[str, Any]) -> list[Any]:
-    """Pydantic-ai capabilities (native/local web tools) for the role."""
+def capabilities_for(names: Iterable[str]) -> list[Any]:
+    """Pydantic-ai capabilities (native/local web tools) for tool names."""
     from pydantic_ai.capabilities.web_search import WebSearch
 
-    names = set(allowed_tool_names(permissions))
     caps: list[Any] = []
     if "web_search" in names:
         caps.append(WebSearch(native=True, local="duckduckgo"))
     return caps
+
+
+def allowed_capabilities(permissions: dict[str, Any]) -> list[Any]:
+    """Pydantic-ai capabilities (native/local web tools) for the role."""
+    return capabilities_for(allowed_tool_names(permissions))
 
 
 def core_tools(permissions: dict[str, Any]) -> list[Callable[..., Any]]:

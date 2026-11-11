@@ -183,6 +183,13 @@ async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:
     assert patched_p.status_code == 200
     assert patched_p.json()["base_url"] == "https://ai.api.cloud.yandex.net/v1"
 
+    tool_names = await client.get(
+        "/admin/named-model-tools", headers=auth(token)
+    )
+    assert tool_names.status_code == 200
+    assert "web_search" in tool_names.json()
+    assert "ask_model" not in tool_names.json()
+
     created = await client.post(
         "/admin/named-models",
         json={
@@ -190,10 +197,12 @@ async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:
             "provider_id": pid,
             "model": "aliceai-llm/latest",
             "system_prompt": "Отвечай как Алиса.",
+            "tools": ["fetch_url", "web_search"],
         },
         headers=auth(token),
     )
     assert created.status_code == 201, created.text
+    assert created.json()["tools"] == ["fetch_url", "web_search"]
     mid = created.json()["id"]
 
     listed = await client.get("/admin/named-models", headers=auth(token))
@@ -201,11 +210,19 @@ async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:
 
     patched = await client.patch(
         f"/admin/named-models/{mid}",
-        json={"enabled": False},
+        json={"enabled": False, "tools": ["web_search"]},
         headers=auth(token),
     )
     assert patched.status_code == 200
     assert patched.json()["enabled"] is False
+    assert patched.json()["tools"] == ["web_search"]
+
+    bad_tools = await client.patch(
+        f"/admin/named-models/{mid}",
+        json={"tools": ["nonsense"]},
+        headers=auth(token),
+    )
+    assert bad_tools.status_code == 422
 
     bad = await client.post(
         "/admin/named-models",

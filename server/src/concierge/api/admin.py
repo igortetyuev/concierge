@@ -1,10 +1,11 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, update
 
 from concierge.agent import prompt as agent_prompt
+from concierge.agent import tools as agent_tools
 from concierge.agent.models import (
     CapabilityBinding,
     CodeAgent,
@@ -533,13 +534,24 @@ async def delete_binding(
 # ---------- named models ----------
 
 
+def _check_named_tools(v: list[str] | None) -> list[str] | None:
+    if v is not None:
+        bad = [n for n in v if n not in agent_tools.NAMED_MODEL_TOOLS]
+        if bad:
+            raise ValueError(f"unknown tools: {', '.join(bad)}")
+    return v
+
+
 class NamedModelIn(BaseModel):
     name: str
     provider_id: int
     model: str
     params: dict[str, Any] = {}
     system_prompt: str | None = None
+    tools: list[str] = []
     enabled: bool = True
+
+    _check_tools = field_validator("tools")(_check_named_tools)
 
 
 class NamedModelPatch(BaseModel):
@@ -548,7 +560,10 @@ class NamedModelPatch(BaseModel):
     model: str | None = None
     params: dict[str, Any] | None = None
     system_prompt: str | None = None
+    tools: list[str] | None = None
     enabled: bool | None = None
+
+    _check_tools = field_validator("tools")(_check_named_tools)
 
 
 class NamedModelOut(BaseModel):
@@ -558,6 +573,7 @@ class NamedModelOut(BaseModel):
     model: str
     params: dict[str, Any]
     system_prompt: str | None
+    tools: list[str]
     enabled: bool
 
     @classmethod
@@ -569,8 +585,15 @@ class NamedModelOut(BaseModel):
             model=m.model,
             params=m.params,
             system_prompt=m.system_prompt,
+            tools=m.tools,
             enabled=m.enabled,
         )
+
+
+@router.get("/named-model-tools")
+async def list_named_model_tools(_: ManageProviders) -> list[str]:
+    """Tool names selectable in a named model's checklist."""
+    return list(agent_tools.NAMED_MODEL_TOOLS)
 
 
 @router.get("/named-models")
