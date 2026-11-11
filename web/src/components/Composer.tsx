@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent, KeyboardEvent } from 'react'
+import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
@@ -191,6 +191,22 @@ export default function Composer({ convId }: { convId: number }) {
     e.target.value = ''
   }
 
+  function onPaste(e: ClipboardEvent<HTMLDivElement>) {
+    const data = e.clipboardData
+    if (!data) return
+    let files = Array.from(data.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f != null)
+    if (!files.length) files = Array.from(data.files)
+    if (!files.length) return
+    e.preventDefault()
+    for (const f of files) {
+      const ext = f.type.split('/')[1] || 'bin'
+      stage(f, f.name || `paste-${Date.now()}.${ext}`)
+    }
+  }
+
   function unstage(key: string) {
     setStaged((list) => {
       const gone = list.find((s) => s.key === key)
@@ -365,7 +381,7 @@ export default function Composer({ convId }: { convId: number }) {
   const canSend = (text.trim().length > 0 || staged.some((s) => s.attachment)) && !uploading
 
   return (
-    <div className="composer-wrap">
+    <div className="composer-wrap" onPaste={onPaste}>
       {staged.length > 0 && (
         <div className="attach-strip">
           {staged.map((s) => (
