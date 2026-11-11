@@ -32,6 +32,7 @@ export interface ConversationOut {
   created_at: string | null
   updated_at: string | null
   archived_at: string | null
+  assistant_name: string
   members: MemberOut[]
 }
 

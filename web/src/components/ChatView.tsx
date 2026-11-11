@@ -107,7 +107,7 @@ export default function ChatView({ convId }: { convId: number }) {
   }
 
   function authorName(id: number | null): string {
-    if (id == null) return 'Консьерж'
+    if (id == null) return conv?.assistant_name || 'Консьерж'
     return conv?.members.find((m) => m.user_id === id)?.display_name ?? 'Участник'
   }
 
@@ -121,6 +121,10 @@ export default function ChatView({ convId }: { convId: number }) {
   const streamList = Object.values(streams).sort((a, b) => a.runId - b.runId)
   const archived = conv?.status === 'archived'
   const canManage = conv != null && (conv.owner_id === me?.id || me?.permissions['*'] === true)
+  const mentionNames =
+    conv?.kind === 'group'
+      ? [conv.assistant_name, ...conv.members.map((m) => m.display_name)]
+      : undefined
 
   // Only a just-arrived voice reply autoplays; history never does.
   // Only a just-arrived (WS) voice reply autoplays; history never does.
@@ -174,7 +178,12 @@ export default function ChatView({ convId }: { convId: number }) {
                 {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
                 <div className="msg sys">
                   <span className="sys-note muted">
-                    <MessageParts parts={m.parts} convId={convId} origin={conv?.origin} />
+                    <MessageParts
+                      parts={m.parts}
+                      convId={convId}
+                      origin={conv?.origin}
+                      mentions={mentionNames}
+                    />
                   </span>
                 </div>
               </div>
@@ -188,7 +197,7 @@ export default function ChatView({ convId }: { convId: number }) {
                   <span className="avatar small">{initials(authorName(m.author_id))}</span>
                 )}
                 <div className="bubble">
-                  {!own && conv?.kind === 'group' && m.author_kind !== 'assistant' && (
+                  {!own && conv?.kind === 'group' && (
                     <div className="msg-author">{authorName(m.author_id)}</div>
                   )}
                   <MessageParts
@@ -196,6 +205,7 @@ export default function ChatView({ convId }: { convId: number }) {
                     convId={convId}
                     origin={conv?.origin}
                     autoplayTts={m.id === ttsAutoplayId}
+                    mentions={mentionNames}
                   />
                   <span className="msg-meta">
                     {fmtTime(m.created_at)}
@@ -226,7 +236,7 @@ export default function ChatView({ convId }: { convId: number }) {
                   progress={t.progress}
                 />
               ))}
-              {s.text ? <Markdown text={s.text} /> : null}
+              {s.text ? <Markdown text={s.text} mentions={mentionNames} /> : null}
               <span className="msg-meta">
                 {s.status === 'running' ? (
                   <span className="stream-cursor">▍</span>
@@ -241,7 +251,7 @@ export default function ChatView({ convId }: { convId: number }) {
         {pending.map((p) => (
           <div key={p.client_msg_id} className="msg own pending">
             <div className="bubble">
-              <Markdown text={p.text} />
+              <Markdown text={p.text} mentions={mentionNames} />
               <span className="msg-meta">
                 {p.failed ? (
                   <>

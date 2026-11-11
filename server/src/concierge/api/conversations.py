@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from concierge.agent import prompt as agent_prompt
 from concierge.agent.runtime import get_runtime
 from concierge.auth.dependencies import CurrentUser, SessionDep, require
 from concierge.auth.models import User
@@ -50,6 +51,7 @@ class ConversationOut(BaseModel):
     created_at: datetime | None
     updated_at: datetime | None
     archived_at: datetime | None
+    assistant_name: str
     members: list[MemberOut]
 
 
@@ -101,7 +103,9 @@ async def _members_out(session: AsyncSession, conv: Conversation) -> list[Member
     ]
 
 
-async def _conv_out(session: AsyncSession, conv: Conversation) -> ConversationOut:
+async def _conv_out(
+    session: AsyncSession, conv: Conversation, user: User
+) -> ConversationOut:
     return ConversationOut(
         id=conv.id,
         kind=conv.kind,
@@ -114,6 +118,7 @@ async def _conv_out(session: AsyncSession, conv: Conversation) -> ConversationOu
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         archived_at=conv.archived_at,
+        assistant_name=await agent_prompt.assistant_name(session, user),
         members=await _members_out(session, conv),
     )
 
@@ -179,7 +184,7 @@ async def create_conversation(
     )
     if conv is None:
         raise HTTPException(400, "unknown member user ids")
-    out = await _conv_out(session, conv)
+    out = await _conv_out(session, conv, user)
     # Nobody is subscribed to a brand-new conversation yet — fan out by user.
     await get_hub().publish_users(
         {m.user_id for m in conv.members},
@@ -199,7 +204,7 @@ async def list_conversations(
     status: Annotated[str, Query(pattern="^(active|archived|all)$")] = "active",
 ) -> list[ConversationOut]:
     convs = await service.list_conversations(session, user.id, status)
-    return [await _conv_out(session, c) for c in convs]
+    return [await _conv_out(session, c, user) for c in convs]
 
 
 @router.get("/conversations/{conversation_id}")
@@ -207,7 +212,7 @@ async def get_conversation(
     conversation_id: int, user: CurrentUser, session: SessionDep
 ) -> ConversationOut:
     conv = await _member_conv_or_404(session, conversation_id, user)
-    return await _conv_out(session, conv)
+    return await _conv_out(session, conv, user)
 
 
 class PatchConversationBody(BaseModel):
@@ -236,7 +241,7 @@ async def patch_conversation(
     )
     if archive:
         memory_indexer.schedule_archive(conv.id)
-    out = await _conv_out(session, conv)
+    out = await _conv_out(session, conv, user)
     await get_hub().publish(
         ChannelEvent(
             "conversation.updated",
@@ -264,7 +269,7 @@ async def add_members(
     added = await service.add_members(session, conv, body.user_ids)
     if added is None:
         raise HTTPException(400, "unknown user ids")
-    out = await _conv_out(session, conv)
+    out = await _conv_out(session, conv, user)
     event = ChannelEvent(
         "conversation.updated",
         conv.id,
@@ -287,7 +292,7 @@ async def remove_member(
         raise HTTPException(400, "cannot remove the owner")
     if not await service.remove_member(session, conv, user_id):
         raise HTTPException(404, "member not found")
-    out = await _conv_out(session, conv)
+    out = await _conv_out(session, conv, user)
     event = ChannelEvent(
         "conversation.updated",
         conv.id,
@@ -375,7 +380,7 @@ async def _fanout_new(
     user, not by subscription.
     """
     hub = get_hub()
-    conv_out = await _conv_out(session, conv)
+    conv_out = await _conv_out(session, conv, user)
     await hub.publish_users(
         {user.id},
         ChannelEvent(

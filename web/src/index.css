@@ -872,8 +872,52 @@ a {
 }
 
 .composer-wrap {
+  position: relative;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+
+.mention-pop {
+  position: absolute;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  left: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mention-item.active {
+  background: var(--accent-soft);
+}
+
+.mention-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attach-strip {
@@ -1250,6 +1294,15 @@ a {
 }
 
 .msg.own .md a {
+  color: inherit;
+}
+
+.md-mention {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.msg.own .md-mention {
   color: inherit;
 }
 

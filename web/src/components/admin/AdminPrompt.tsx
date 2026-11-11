@@ -33,8 +33,7 @@ export default function AdminPrompt() {
   async function save() {
     setSaved(false)
     try {
-      if (name.trim())
-        await apiClient.putGlobalSetting('agent.name', name.trim())
+      await apiClient.putGlobalSetting('agent.name', name.trim() || 'Консьерж')
       if (prompt.trim())
         await apiClient.putGlobalSetting('agent.system_prompt', prompt)
       setSaved(true)
@@ -60,7 +59,11 @@ export default function AdminPrompt() {
       <h3>Системный промпт</h3>
       <label className="field">
         <span>Имя ассистента</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          value={name}
+          placeholder="Консьерж"
+          onChange={(e) => setName(e.target.value)}
+        />
       </label>
       <label className="field">
         <span>Базовый промпт (placeholder: {'{name}'})</span>

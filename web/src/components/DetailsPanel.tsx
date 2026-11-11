@@ -121,6 +121,17 @@ export default function DetailsPanel({ convId }: { convId: number }) {
 
         <section className="details-section">
           <h3>Участники</h3>
+          {conv.kind === 'group' && (
+            <div className="member-row">
+              <span className="avatar small bot">
+                {initials(conv.assistant_name)}
+              </span>
+              <span className="member-name">
+                {conv.assistant_name}
+                <span className="muted"> · ассистент</span>
+              </span>
+            </div>
+          )}
           {conv.members.map((m) => (
             <div key={m.user_id} className="member-row">
               <span className={`avatar small${online.includes(m.user_id) ? ' online' : ''}`}>

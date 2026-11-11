@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
 import type { AttachmentOut, MessagePart } from '../lib/api'
 import { audioExt, pickAudioMime } from '../lib/audio'
+import { initials } from '../lib/format'
+import { mentionRegex } from '../lib/mentions'
 import { loadPromptHistory, pushPromptHistory } from '../lib/promptHistory'
 import { sendTyping } from '../lib/ws'
+import { $conversations } from '../store/conversations'
 import { sendParts, sendMessage } from '../store/messages'
 import { $composerPrefill } from '../store/ui'
 import { IconCamera, IconClose, IconMic, IconPaperclip, IconSend, IconStop } from './icons'
@@ -20,6 +23,26 @@ interface Staged {
   previewUrl: string | null
   attachment: AttachmentOut | null
   error: string | null
+}
+
+interface MentionTarget {
+  key: string
+  name: string
+  userId: number | null
+}
+
+/** `@` token under the caret: start index + typed query, or null. */
+function detectMention(
+  value: string,
+  caret: number,
+): { start: number; query: string } | null {
+  const before = value.slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at < 0) return null
+  if (at > 0 && !/\s/.test(before[at - 1])) return null
+  const query = before.slice(at + 1)
+  if (query.includes('\n') || query.length > 30) return null
+  return { start: at, query }
 }
 
 export default function Composer({ convId }: { convId: number }) {
@@ -37,12 +60,48 @@ export default function Composer({ convId }: { convId: number }) {
   const histIdxRef = useRef(-1)
   const draftRef = useRef('')
   const prefill = useStore($composerPrefill)
+  const conv = useStore($conversations).find((c) => c.id === convId)
+  const [mention, setMention] = useState<{
+    start: number
+    query: string
+  } | null>(null)
+  const [mentionIdx, setMentionIdx] = useState(0)
+
+  const mentionTargets = useMemo<MentionTarget[]>(() => {
+    if (conv?.kind !== 'group') return []
+    return [
+      {
+        key: 'assistant',
+        name: conv.assistant_name || 'Консьерж',
+        userId: null,
+      },
+      ...conv.members.map((m) => ({
+        key: `u${m.user_id}`,
+        name: m.display_name,
+        userId: m.user_id,
+      })),
+    ]
+  }, [conv])
+
+  const mentionQuery = mention?.query.toLowerCase() ?? ''
+  const mentionList = mention
+    ? mentionTargets.filter((t) =>
+        t.name.toLowerCase().includes(mentionQuery),
+      )
+    : []
+  const mentionOpen = mention != null && mentionList.length > 0
+  const activeMention = Math.min(mentionIdx, mentionList.length - 1)
 
   // ArrowUp/ArrowDown recall index resets when the conversation changes.
   useEffect(() => {
     histIdxRef.current = -1
     draftRef.current = ''
+    setMention(null)
   }, [convId])
+
+  useEffect(() => {
+    setMentionIdx(0)
+  }, [mentionQuery])
 
   function autoresize() {
     const el = areaRef.current
@@ -72,6 +131,7 @@ export default function Composer({ convId }: { convId: number }) {
   useEffect(() => {
     if (!prefill || prefill.convId !== convId) return
     $composerPrefill.set(null)
+    setMention(null)
     setText(prefill.text)
     requestAnimationFrame(() => {
       autoresize()
@@ -80,14 +140,32 @@ export default function Composer({ convId }: { convId: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill, convId])
 
-  function onChange(value: string) {
+  function onChange(value: string, caret?: number) {
     setText(value)
     autoresize()
+    const el = areaRef.current
+    setMention(
+      detectMention(value, caret ?? el?.selectionStart ?? value.length),
+    )
     const now = Date.now()
     if (value && now - lastTyping.current > TYPING_INTERVAL) {
       lastTyping.current = now
       sendTyping(convId)
     }
+  }
+
+  function completeMention(target: MentionTarget) {
+    const el = areaRef.current
+    if (!el || mention == null) return
+    const caret = el.selectionStart ?? text.length
+    const insert = `@${target.name} `
+    const next = text.slice(0, mention.start) + insert + text.slice(caret)
+    const pos = mention.start + insert.length
+    onChange(next, pos)
+    requestAnimationFrame(() => {
+      el.focus()
+      el.selectionStart = el.selectionEnd = pos
+    })
   }
 
   function stage(file: File | Blob, name: string) {
@@ -155,6 +233,7 @@ export default function Composer({ convId }: { convId: number }) {
     const value = text
     const ready = staged.filter((s) => s.attachment != null)
     setText('')
+    setMention(null)
     requestAnimationFrame(autoresize)
     if (!value.trim() && !ready.length) return
     const parts: MessagePart[] = []
@@ -167,6 +246,26 @@ export default function Composer({ convId }: { convId: number }) {
         name: s.name,
         mime: att.mime,
       })
+    }
+    if (value.trim() && mentionTargets.length) {
+      const re = mentionRegex(mentionTargets.map((t) => t.name))
+      const seen = new Set<string>()
+      if (re) {
+        for (const m of value.matchAll(re)) {
+          const key = m[0].slice(1).toLowerCase()
+          if (seen.has(key)) continue
+          seen.add(key)
+          const t = mentionTargets.find(
+            (x) => x.name.toLowerCase() === key,
+          )
+          if (!t) continue
+          parts.push(
+            t.userId == null
+              ? { type: 'mention', assistant: true, name: t.name }
+              : { type: 'mention', user_id: t.userId, name: t.name },
+          )
+        }
+      }
     }
     const preview =
       value.trim() || `[вложение] ${ready.map((s) => s.name).join(', ')}`
@@ -194,6 +293,31 @@ export default function Composer({ convId }: { convId: number }) {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionOpen && !e.nativeEvent.isComposing) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionIdx((i) => (i + 1) % mentionList.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIdx(
+          (i) => (i - 1 + mentionList.length) % mentionList.length,
+        )
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        const target = mentionList[activeMention]
+        if (target) completeMention(target)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMention(null)
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void submit()
@@ -261,6 +385,28 @@ export default function Composer({ convId }: { convId: number }) {
           ))}
         </div>
       )}
+      {mentionOpen && (
+        <div className="mention-pop" role="listbox">
+          {mentionList.map((t, i) => (
+            <button
+              key={t.key}
+              type="button"
+              role="option"
+              aria-selected={i === activeMention}
+              className={`mention-item${i === activeMention ? ' active' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                completeMention(t)
+              }}
+              onMouseEnter={() => setMentionIdx(i)}
+            >
+              <span className="avatar small">{initials(t.name)}</span>
+              <span className="mention-name">{t.name}</span>
+              {t.userId == null && <span className="muted">ассистент</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="composer">
         <input ref={fileRef} type="file" multiple hidden onChange={onFiles} />
         <input
@@ -318,6 +464,17 @@ export default function Composer({ convId }: { convId: number }) {
             value={text}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
+            onSelect={(e) =>
+              setMention(
+                e.currentTarget.selectionStart === e.currentTarget.selectionEnd
+                  ? detectMention(
+                      e.currentTarget.value,
+                      e.currentTarget.selectionStart,
+                    )
+                  : null,
+              )
+            }
+            onBlur={() => setMention(null)}
             placeholder="Сообщение"
             aria-label="Сообщение"
           />

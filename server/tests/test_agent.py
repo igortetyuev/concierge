@@ -347,6 +347,16 @@ async def test_reply_mode_mention(engine, client: httpx.AsyncClient) -> None:
     )
     cid = int(resp.json()["id"])
     assert resp.json()["reply_mode"] == "mention"
+    assert resp.json()["assistant_name"] == "Консьерж"
+
+    resp = await client.put(
+        "/settings/user",
+        json={"key": "agent.name", "value": "Джарвис"},
+        headers=auth(token),
+    )
+    assert resp.status_code == 200
+    conv = await client.get(f"/conversations/{cid}", headers=auth(token))
+    assert conv.json()["assistant_name"] == "Джарвис"
 
     await _post_and_collect(client, token, cid, "просто чат")
     await get_runtime().wait_idle()
@@ -357,6 +367,42 @@ async def test_reply_mode_mention(engine, client: httpx.AsyncClient) -> None:
             )
         ).scalars()
         assert list(runs) == []
+
+    # A mention of another member is not an address to the concierge.
+    resp = await client.post(
+        f"/conversations/{cid}/messages",
+        json={
+            "parts": [
+                {"type": "text", "text": "@Mem привет"},
+                {"type": "mention", "user_id": member.id, "name": "Mem"},
+            ]
+        },
+        headers=auth(token),
+    )
+    assert resp.status_code == 201
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        runs = (
+            await session.execute(
+                select(Run).where(Run.conversation_id == cid)
+            )
+        ).scalars()
+        assert list(runs) == []
+
+    # An assistant-tagged mention part triggers a run.
+    resp = await client.post(
+        f"/conversations/{cid}/messages",
+        json={
+            "parts": [
+                {"type": "text", "text": "привет"},
+                {"type": "mention", "assistant": True},
+            ]
+        },
+        headers=auth(token),
+    )
+    assert resp.status_code == 201
+    run = await _run_and_wait(cid, int(resp.json()["id"]))
+    assert run.status == "done"
 
     msg_yes = await _post_and_collect(client, token, cid, "@консьерж привет")
     run = await _run_and_wait(cid, msg_yes["id"])

@@ -237,6 +237,8 @@ interface MessagePartsProps {
   origin?: string
   /** Autoplay audio marked `tts` (a fresh voice-quick reply). */
   autoplayTts?: boolean
+  /** Display names highlighted as @mentions inside text parts. */
+  mentions?: string[]
 }
 
 export default function MessageParts({
@@ -244,6 +246,7 @@ export default function MessageParts({
   convId,
   origin,
   autoplayTts = false,
+  mentions,
 }: MessagePartsProps) {
   const hasText = parts.some((p) => p.type === 'text')
   return (
@@ -253,7 +256,7 @@ export default function MessageParts({
           if (p.transcribed === true && convId != null) {
             return (
               <div key={i} className="transcribed">
-                <Markdown text={String(p.text ?? '')} />
+                <Markdown text={String(p.text ?? '')} mentions={mentions} />
                 <span className="transcribed-tag muted">
                   распознано
                   <button
@@ -271,7 +274,9 @@ export default function MessageParts({
               </div>
             )
           }
-          return <Markdown key={i} text={String(p.text ?? '')} />
+          return (
+            <Markdown key={i} text={String(p.text ?? '')} mentions={mentions} />
+          )
         }
         if (p.type === 'mention') {
           return null
