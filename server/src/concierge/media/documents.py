@@ -69,6 +69,8 @@ def _xlsx(data: bytes) -> dict[str, Any]:
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         out: list[str] = []
+        if wb.properties.title:
+            out.append(str(wb.properties.title))
         for sheet in wb.worksheets:
             out.append(f"### {sheet.title}")
             for row in sheet.iter_rows(values_only=True):
@@ -94,6 +96,12 @@ def _pptx(data: bytes) -> dict[str, Any]:
             for shape in slide.shapes
             if shape.has_text_frame and shape.text_frame.text.strip()
         ]
+        for shape in slide.shapes:
+            if shape.has_table:
+                for row in shape.table.rows:
+                    texts.append(
+                        "\t".join(c.text for c in row.cells)
+                    )
         if texts:
             out.append(f"### Слайд {i}")
             out.extend(texts)
@@ -106,9 +114,11 @@ def _pptx(data: bytes) -> dict[str, Any]:
 def _plain(mime: str, data: bytes) -> dict[str, Any]:
     if mime == "text/csv" or mime == "application/csv":
         try:
-            rows = list(csv.reader(io.StringIO(data.decode("utf-8", "replace"))))
+            rows = list(
+                csv.reader(io.StringIO(data.decode("utf-8-sig", "replace")))
+            )
             text = "\n".join("\t".join(r) for r in rows)
             return {"text": text[:TEXT_MAX_CHARS]}
         except csv.Error:
             pass
-    return {"text": data.decode("utf-8", "replace")[:TEXT_MAX_CHARS]}
+    return {"text": data.decode("utf-8-sig", "replace")[:TEXT_MAX_CHARS]}

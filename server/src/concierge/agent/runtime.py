@@ -211,13 +211,18 @@ class AgentRuntime:
             log.exception("run %s failed", run_id)
             await self._finish(run_id, conv.id, "failed", error=str(exc))
             await self._save_reply(
-                session_maker, conv.id, run_id, ERROR_TEXT, tool_parts
+                session_maker,
+                conv.id,
+                run_id,
+                ERROR_TEXT,
+                tool_parts,
+                deps.documents,
             )
             return
 
         await self._finish(run_id, conv.id, "done", usage=usage)
         await self._save_reply(
-            session_maker, conv.id, run_id, output, tool_parts
+            session_maker, conv.id, run_id, output, tool_parts, deps.documents
         )
         await self._ensure_title(conv.id, user, trigger.parts)
         await self._maybe_tts_reply(conv.id, user, output)
@@ -343,12 +348,17 @@ class AgentRuntime:
         run_id: int,
         text: str,
         tool_parts: list[dict[str, Any]],
+        document_parts: list[dict[str, Any]] | None = None,
     ) -> None:
         async with session_maker() as session:
             conv = await session.get(Conversation, conversation_id)
             if conv is None:
                 return
-            parts = [*tool_parts, {"type": "text", "text": text}]
+            parts = [
+                *tool_parts,
+                {"type": "text", "text": text},
+                *(document_parts or []),
+            ]
             msg = await conversations.post_assistant_message(
                 session, conv, parts, run_id
             )

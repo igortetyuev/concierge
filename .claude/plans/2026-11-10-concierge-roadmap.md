@@ -12,7 +12,7 @@ depends_on: []
 conflicts_with: []
 touches:
   - "**"            # greenfield: репозиторий ~/projects/concierge пуст
-claimed_by: null    # план 0 done 2026-11-10; статусы планов — в их секциях ниже
+claimed_by: null    # план 9 done 2026-11-11; статусы планов — в их секциях ниже
 claimed_at: null
 finished_at: null   # umbrella: done когда будут done планы 0–11
 blocked_reason: null
@@ -208,6 +208,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
    **Verify:** привязка через код; текст и голосовое в DM → ответ в Telegram и то же сообщение видно в PWA; топик в тестовой супергруппе ↔ групповая сессия с двумя привязанными пользователями; непривязанный пользователь получает только инструкцию; тесты aiogram-хэндлеров с mock Bot API и mock-STT.
 
 ### План 9 — Генерация документов ИИ
+
+**Status: done — 2026-11-11, devin-desktop/main, claimed_at: 2026-11-11, finished_at: 2026-11-11.**
 
 1. Инструмент `create_document(format, title, content)`: `md`, `txt`, `csv`, `docx`, `xlsx`, `pptx`, `pdf` (markdown → HTML → PDF через pymupdf; weasyprint — только если памяти хватит).
 2. Результат — `attachments` от ассистента, карточка в чате (PWA) и `sendDocument` (Telegram).

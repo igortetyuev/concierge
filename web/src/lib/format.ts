@@ -31,6 +31,19 @@ export function fmtListDate(iso: string | null): string {
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
 }
 
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return ''
+  if (n < 1024) return `${n} Б`
+  const units = ['КБ', 'МБ', 'ГБ']
+  let v = n
+  let u = -1
+  do {
+    v /= 1024
+    u += 1
+  } while (v >= 1024 && u < units.length - 1)
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[u]}`
+}
+
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   return parts

@@ -79,7 +79,8 @@ async def test_voice_quick_ok(engine, client: httpx.AsyncClient) -> None:
     assert audio["status"] == "done"
     reply = msgs[-1]
     assert reply["author_kind"] == "assistant"
-    assert reply["parts"][-1]["text"] == "сделано"
+    text_parts = [p for p in reply["parts"] if p["type"] == "text"]
+    assert text_parts[-1]["text"] == "сделано"
 
     conv = (
         await client.get(f"/conversations/{cid}", headers=auth(token))

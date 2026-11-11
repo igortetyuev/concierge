@@ -717,6 +717,43 @@ a {
   cursor: pointer;
 }
 
+.doc-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.doc-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.doc-card-name {
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-card-meta {
+  font-size: 0.72rem;
+}
+
+.doc-card-ext {
+  font-weight: 600;
+}
+
 .msg-image {
   max-width: min(320px, 100%);
   max-height: 320px;

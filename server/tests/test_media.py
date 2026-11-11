@@ -31,6 +31,12 @@ _provider_seq = 0
 async def _add_provider(capability: str, params: dict) -> None:
     global _provider_seq
     _provider_seq += 1
+    params = dict(params)
+    if capability == "chat":
+        params.setdefault(
+            "call_tools",
+            ["search_messages", "current_datetime", "remember", "recall", "forget"],
+        )
     async with db.get_sessionmaker()() as session:
         provider = ModelProvider(name=f"mp-{capability}-{_provider_seq}", kind="test")
         session.add(provider)

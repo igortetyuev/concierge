@@ -31,6 +31,15 @@ async def _add_provider(
 ) -> None:
     global _provider_seq
     _provider_seq += 1
+    params = dict(params or {})
+    if capability == "chat":
+        # Parallel tool calls share one sqlite connection (StaticPool);
+        # create_document is covered by test_documents.py — keep it out
+        # of the parallel batch so sibling rollbacks can't kill its write.
+        params.setdefault(
+            "call_tools",
+            ["search_messages", "current_datetime", "remember", "recall", "forget"],
+        )
     async with db.get_sessionmaker()() as session:
         provider = ModelProvider(
             name=f"p-{capability}-{kind}-{_provider_seq}", kind=kind
@@ -132,14 +141,21 @@ async def test_agent_run_persists_and_uses_tools(
             )
         ).scalar_one()
     assert reply.author_kind == "assistant"
-    assert reply.parts[-1] == {"type": "text", "text": "ответ"}
+    text_parts = [p for p in reply.parts if p["type"] == "text"]
+    assert text_parts == [{"type": "text", "text": "ответ"}]
     # TestModel call_tools="all" -> both core tools were exposed and called.
     tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
     assert {"search_messages", "current_datetime"} <= tool_names
 
 
 async def test_tools_deny_list(engine, client: httpx.AsyncClient) -> None:
-    await _add_provider("chat", params={"custom_output_text": "ok"})
+    await _add_provider(
+        "chat",
+        params={
+            "custom_output_text": "ok",
+            "call_tools": ["search_messages", "remember", "recall", "forget"],
+        },
+    )
     async with db.get_sessionmaker()() as session:
         session.add(
             Role(
@@ -171,8 +187,24 @@ async def test_tools_deny_list(engine, client: httpx.AsyncClient) -> None:
 async def test_mcp_stdio_server_called(
     engine, client: httpx.AsyncClient
 ) -> None:
-    await _add_provider("chat", params={"custom_output_text": "ok"})
+    await _add_provider(
+        "chat",
+        params={
+            "custom_output_text": "ok",
+            "call_tools": [
+                "search_messages",
+                "current_datetime",
+                "remember",
+                "recall",
+                "forget",
+                "echo_srv_echo",
+            ],
+        },
+    )
     async with db.get_sessionmaker()() as session:
+        child_role = (
+            await session.execute(select(Role).where(Role.name == "child"))
+        ).scalar_one()
         session.add(
             McpServer(
                 name="echo_srv",
@@ -182,6 +214,9 @@ async def test_mcp_stdio_server_called(
             )
         )
         await session.commit()
+    # The child role can't see the MCP server; a role-scoped binding keeps
+    # echo_srv_echo out of its TestModel call list (else KeyError).
+    await _add_provider("chat", role_id=child_role.id)
     await make_user("mcpuser", "adult")
     token = await login(client, "mcpuser")
     cid = await _make_conv(client, token)
@@ -270,7 +305,8 @@ async def test_e2e_stream_over_ws(engine, client: httpx.AsyncClient) -> None:
                     break
             assert saw_delta
             assert reply is not None
-            assert reply["parts"][-1]["text"] == "стрим"
+            text_parts = [p for p in reply["parts"] if p["type"] == "text"]
+            assert text_parts[-1]["text"] == "стрим"
             assert reply["run_id"] is not None
 
             # Persisted: user message then assistant reply (checked via REST —

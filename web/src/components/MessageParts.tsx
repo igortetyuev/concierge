@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 
 import { apiClient, fetchAttachmentObjectUrl } from '../lib/api'
 import type { MessagePart } from '../lib/api'
+import { fmtBytes } from '../lib/format'
 import { $attachments, setAttachment } from '../store/attachments'
 import { $composerPrefill } from '../store/ui'
 import Markdown from './Markdown'
@@ -121,19 +122,37 @@ function AttachmentPart({ part, convId, origin, hasText, autoplay }: AttachmentP
         ) : (
           <span className="part-attachment muted">{failed ? name : 'загрузка…'}</span>
         ))}
-      {!media && (
-        <button className="part-attachment file" onClick={() => void download()}>
-          <IconFile size={14} /> {name}
-        </button>
-      )}
+      {!media &&
+        (part.type === 'document' ? (
+          <button className="doc-card" onClick={() => void download()}>
+            <IconFile size={20} />
+            <span className="doc-card-info">
+              <span className="doc-card-name">{name}</span>
+              <span className="doc-card-meta muted">
+                <span className="doc-card-ext">
+                  {name.includes('.')
+                    ? name.split('.').pop()!.toUpperCase()
+                    : 'FILE'}
+                </span>
+                {typeof part.size === 'number' ? ` · ${fmtBytes(part.size)}` : ''}
+              </span>
+            </span>
+          </button>
+        ) : (
+          <button className="part-attachment file" onClick={() => void download()}>
+            <IconFile size={14} /> {name}
+          </button>
+        ))}
       {caption ? <span className="part-caption">{String(caption)}</span> : null}
       {transcript ? <span className="part-transcript">{String(transcript)}</span> : null}
-      {derivedText && !transcript ? (
+      {derivedText && !transcript && part.generated !== true ? (
         <span className="part-transcript">
           {String(derivedText).length > 400 ? `${String(derivedText).slice(0, 400)}…` : String(derivedText)}
         </span>
       ) : null}
-      {note && <span className="part-note muted">{note}</span>}
+      {note && part.generated !== true && (
+        <span className="part-note muted">{note}</span>
+      )}
       {canRetryStt && (
         <button className="vq-act" onClick={() => void retryStt()} disabled={busy}>
           {busy ? 'Распознаю…' : 'Повторить распознавание'}

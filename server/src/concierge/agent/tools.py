@@ -1,14 +1,23 @@
+import asyncio
+import logging
+import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic_ai import RunContext
+from pydantic_ai import Agent, RunContext
 
+from concierge.agent import providers
 from concierge.auth.models import User
 from concierge.conversations import service as conversations
 from concierge.core.db import get_sessionmaker
+from concierge.documents.render import FORMATS, render_document
+from concierge.media import service as media_service
+from concierge.media.documents import extract_document
 from concierge.memory import service as memory_service
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -17,6 +26,7 @@ class ToolDeps:
 
     user_id: int
     conversation_id: int
+    documents: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def search_messages(
@@ -100,9 +110,111 @@ def message_text(parts: list[dict[str, Any]]) -> str:
     )
 
 
+DOCUMENT_INSTRUCTIONS = (
+    "Напиши в Markdown финальное содержимое документа: "
+    "заголовки через #, списки через -, таблицы — Markdown pipe-таблицами "
+    "(csv и xlsx используют таблицы; несколько таблиц в xlsx станут "
+    "несколькими листами, названными по ближайшему заголовку выше; в pptx "
+    "каждый заголовок #/## начинает новый слайд). Воспринимай вход как "
+    "бриф или черновик. Ответь только содержимым документа, без вступлений "
+    "и без обрамления в ```."
+)
+
+_FENCE_RE = re.compile(r"^```[^\n]*\n(?P<body>.*)\n?```\s*$", re.DOTALL)
+
+
+async def _write_content(fmt: str, title: str, content: str, user: User) -> str:
+    """Optional `document` capability rewrites the draft into final content."""
+    async with get_sessionmaker()() as session:
+        bound = await providers.get_model(session, "document", user)
+    if bound is None:
+        return content
+    try:
+        agent = Agent(
+            bound.model,
+            instructions=DOCUMENT_INSTRUCTIONS,
+            model_settings=bound.settings,
+        )
+        result = await agent.run(
+            f"Название: {title}\nФормат файла: {fmt}\n\n{content}"  # noqa: RUF001
+        )
+        out = str(result.output).strip()
+        m = _FENCE_RE.match(out)
+        if m:
+            out = m.group("body").strip()
+        if out:
+            return out
+    except Exception:
+        log.exception("document writer model failed")
+    return content
+
+
+async def create_document(
+    ctx: RunContext[ToolDeps],
+    format: Literal["md", "txt", "csv", "docx", "xlsx", "pptx", "pdf"],
+    title: str,
+    content: str,
+) -> dict[str, Any]:
+    """Create a file and attach it to the reply automatically.
+
+    `content` is Markdown; tables are Markdown pipe tables (csv/xlsx use the
+    tables; several tables in xlsx become several sheets named by the heading
+    above each). In pptx every #/## heading starts a new slide. No need to
+    paste the content or a link into the reply.
+    """
+    if format not in FORMATS:
+        return {"error": f"unknown document format {format!r}"}
+    async with get_sessionmaker()() as session:
+        user = await session.get(User, ctx.deps.user_id)
+    if user is None:
+        return {"error": "user not found"}
+    content = await _write_content(format, title, content, user)
+    try:
+        data, mime, name = await asyncio.to_thread(
+            render_document, format, title, content
+        )
+        derived = await asyncio.to_thread(extract_document, mime, name, data)
+    except ValueError as e:
+        return {"error": str(e)}
+    async with get_sessionmaker()() as session:
+        att, _ = await media_service.create_attachment(
+            session, user, name, mime, data, ctx.deps.conversation_id
+        )
+        att.derived = {
+            "status": "done",
+            "generated": True,
+            **derived,
+        }
+        await session.commit()
+        att_id, att_size = att.id, att.size
+    part = {
+        "type": "document",
+        "attachment_id": att_id,
+        "name": name,
+        "mime": mime,
+        "size": att_size,
+        "status": "done",
+        "generated": True,
+    }
+    ctx.deps.documents.append(part)
+    return {
+        "attachment_id": att_id,
+        "name": name,
+        "format": format,
+        "size": att_size,
+    }
+
+
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
     f.__name__: f
-    for f in (search_messages, current_datetime, remember, recall, forget)
+    for f in (
+        search_messages,
+        current_datetime,
+        remember,
+        recall,
+        forget,
+        create_document,
+    )
 }
 
 
