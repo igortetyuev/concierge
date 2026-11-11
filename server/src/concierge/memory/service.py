@@ -28,9 +28,11 @@ async def _embed_and_ensure(
 ) -> tuple[BoundEmbedder, list[list[float]]] | None:
     embedder = await get_embedder(session, user)
     if embedder is None:
+        log.warning("no usable `embedding` capability binding")
         return None
     vectors = await embedder.embed(texts)
     if not vectors or not vectors[0]:
+        log.warning("embedding provider returned no vectors")
         return None
     await store.ensure_collections(store.get_qdrant(), embedder.slug, len(vectors[0]))
     return embedder, vectors
