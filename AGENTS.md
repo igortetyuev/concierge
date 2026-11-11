@@ -39,7 +39,10 @@ curl -k https://box/healthz   # -> {"db":"ok","qdrant":"ok"}
 ## Эмбеддинги
 
 Ollama на `winhost` (192.168.99.66, Windows): `http://192.168.99.66:11434/v1`, модель
-`bge-m3` (1024-dim). Для capability `embedding` — provider kind `ollama` с этим base_url.
+`bge-m3` (1024-dim). На box capability `embedding` привязана к провайдеру
+`ollama-winhost` (bge-m3): коллекции Qdrant `concierge_memory__bgem3` и
+`concierge_messages__bgem3`. Без binding `remember`/`recall` молча деградируют
+(запись в `memory_items` есть, векторов нет) — смотри warning в journald.
 Автозапуск — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env, firewall-правило «Ollama 11434`.
 На box заведён провайдер `ollama-winhost` (kind `ollama`, тот же base_url); capability `vision`
 привязана к нему как `qwen3-vl:4b-instruct` (CPU-инференс ~10–20 с на картинку).
