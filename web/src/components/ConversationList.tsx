@@ -68,7 +68,6 @@ export default function ConversationList() {
   return (
     <div className="convlist">
       <header className="convlist-head">
-        <span className="convlist-brand">Консьерж</span>
         <button
           className="icon-btn"
           title="Новая сессия"
@@ -77,6 +76,7 @@ export default function ConversationList() {
         >
           <IconPlus />
         </button>
+        <VoiceQuick />
         <button
           className="icon-btn"
           title="Новая группа"
@@ -93,14 +93,6 @@ export default function ConversationList() {
         >
           <IconBook />
         </Link>
-        <Link
-          to="/settings"
-          className="icon-btn"
-          title="Настройки"
-          aria-label="Настройки"
-        >
-          <IconSettings />
-        </Link>
         {isAdmin && (
           <Link
             to="/admin"
@@ -111,7 +103,6 @@ export default function ConversationList() {
             <IconTool />
           </Link>
         )}
-        <VoiceQuick />
       </header>
 
       <div className="convlist-search">
@@ -202,6 +193,14 @@ export default function ConversationList() {
       <footer className="convlist-foot">
         <span className="avatar small">{initials(me?.display_name ?? '?')}</span>
         <span className="convlist-me">{me?.display_name}</span>
+        <Link
+          to="/settings"
+          className="icon-btn"
+          title="Настройки"
+          aria-label="Настройки"
+        >
+          <IconSettings />
+        </Link>
         <button
           className="icon-btn"
           title="Выйти"

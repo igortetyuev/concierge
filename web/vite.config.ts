@@ -18,13 +18,17 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/apple-touch-icon.png'],
+      includeAssets: [
+        'favicon.svg',
+        'icons/apple-touch-icon.png',
+        'fonts/InterVariable.woff2',
+      ],
       manifest: {
         name: 'Консьерж',
         short_name: 'Консьерж',
         description: 'Семейный агент-консьерж',
-        theme_color: '#7c3aed',
-        background_color: '#16171d',
+        theme_color: '#317cff',
+        background_color: '#141414',
         display: 'standalone',
         start_url: '/',
         icons: [

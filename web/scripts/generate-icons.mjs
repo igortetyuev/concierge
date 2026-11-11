@@ -24,7 +24,7 @@ if (!CHROME) throw new Error('Chrome/Chromium not found; set CHROME env')
 
 // `scale` shrinks the artwork inside a flat-color canvas (maskable safe zone).
 function page(size, scale) {
-  return `<!doctype html><html><body style="margin:0;width:${size}px;height:${size}px;background:#6d28d9;display:grid;place-items:center;overflow:hidden"><div style="width:${size * scale}px;height:${size * scale}px">${svg.replace(/<svg /, `<svg width="${size * scale}" height="${size * scale}" `)}</div></body></html>`
+  return `<!doctype html><html><body style="margin:0;width:${size}px;height:${size}px;background:#317cff;display:grid;place-items:center;overflow:hidden"><div style="width:${size * scale}px;height:${size * scale}px">${svg.replace(/<svg /, `<svg width="${size * scale}" height="${size * scale}" `)}</div></body></html>`
 }
 
 const targets = [

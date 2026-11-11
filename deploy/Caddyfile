@@ -1,6 +1,8 @@
-box {
-	tls internal
+{
+	auto_https disable_redirects
+}
 
+(app) {
 	header {
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'"
 		X-Content-Type-Options nosniff
@@ -22,4 +24,14 @@ box {
 	}
 
 	encode zstd gzip
+}
+
+box {
+	tls internal
+	import app
+}
+
+# LAN-only: plain HTTP too (http://box, http://<ip>)
+:80 {
+	import app
 }
