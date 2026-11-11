@@ -623,6 +623,7 @@ a {
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
   padding: 12px 8px;
   scroll-behavior: auto;
@@ -654,6 +655,7 @@ a {
 
 .bubble {
   max-width: min(76%, 640px);
+  min-width: 0;
   padding: 8px 12px;
   border-radius: 16px;
   background: var(--bubble);
@@ -669,6 +671,10 @@ a {
 
 .msg:not(.own) .bubble {
   border-bottom-left-radius: 6px;
+}
+
+.msg.bot .bubble {
+  max-width: 100%;
 }
 
 .msg-author {
@@ -1325,7 +1331,8 @@ a {
   padding: 10px 12px;
   border-radius: 10px;
   background: var(--surface-2);
-  overflow-x: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
   font-size: 0.85rem;
 }
 
@@ -1380,6 +1387,9 @@ a {
 }
 
 .md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   font-size: 0.85rem;
 }
