@@ -72,6 +72,18 @@ async def get_value(
     return default
 
 
+async def get_global(
+    session: AsyncSession, key: str, default: Any = None
+) -> Any:
+    """Global-scope value only; unwraps secrets like get_value."""
+    value = await _get_stored(session, SettingScope.global_, 0, key)
+    if value is None:
+        return default
+    if crypto.is_secret(value):
+        return crypto.unwrap_secret(value)
+    return value
+
+
 async def set_value(
     session: AsyncSession,
     scope: SettingScope,

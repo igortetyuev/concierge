@@ -35,3 +35,11 @@ curl -k https://box/healthz   # -> {"db":"ok","qdrant":"ok"}
 ```
 
 Конфигурация сервера — через env с префиксом `CONCIERGE_` (на box: `/etc/concierge/.env`).
+
+## Telegram-бот
+
+Включается из PWA (`/settings`, админ): `telegram.enabled` + `telegram.bot_token` (секрет —
+нужен `CONCIERGE_SECRET_KEY`); супервизор подхватывает изменения без рестарта (~10 с).
+Привязка аккаунта: код в `/settings` → `/start <код>` боту. Чтобы бот видел все сообщения
+групп/топиков (они сохраняются в групповую сессию, ответ — только по @упоминанию/reply),
+отключите privacy mode у BotFather (`/setprivacy`) или сделайте бота админом группы.

@@ -68,6 +68,8 @@ async def mentions(session: AsyncSession, user: User) -> tuple[str, ...]:
 
 
 def is_mentioned(parts: list[dict[str, Any]], tokens: tuple[str, ...]) -> bool:
+    if any(p.get("type") == "mention" for p in parts):
+        return True
     text = " ".join(
         str(p.get("text", "")) for p in parts if p.get("type") == "text"
     ).lower()

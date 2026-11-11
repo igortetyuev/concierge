@@ -24,11 +24,12 @@ class ChannelSink(Protocol):
 
 
 class Connection:
-    __slots__ = ("sink", "subscriptions", "user_id")
+    __slots__ = ("presence", "sink", "subscriptions", "user_id")
 
     def __init__(self, sink: ChannelSink) -> None:
         self.sink = sink
         self.user_id = sink.user_id
+        self.presence = getattr(sink, "presence", True)
         self.subscriptions: set[int] = set()
 
 
@@ -45,6 +46,8 @@ class Hub:
 
     async def disconnect(self, conn: Connection) -> None:
         self._conns.discard(conn)
+        if not conn.presence:
+            return
         for conv_id in conn.subscriptions:
             if self._user_subscribed(conn.user_id, conv_id):
                 continue
@@ -59,7 +62,7 @@ class Hub:
     async def subscribe(self, conn: Connection, conversation_id: int) -> None:
         already_online = self._user_subscribed(conn.user_id, conversation_id)
         conn.subscriptions.add(conversation_id)
-        if not already_online:
+        if conn.presence and not already_online:
             await self.publish(
                 ChannelEvent(
                     "presence",
@@ -87,7 +90,9 @@ class Hub:
 
     def online_users(self, conversation_id: int) -> set[int]:
         return {
-            conn.user_id for conn in self._subscribed(conversation_id)
+            conn.user_id
+            for conn in self._subscribed(conversation_id)
+            if conn.presence
         }
 
     def _subscribed(self, conversation_id: int | None) -> list[Connection]:
@@ -99,7 +104,9 @@ class Hub:
 
     def _user_subscribed(self, user_id: int, conversation_id: int) -> bool:
         return any(
-            conn.user_id == user_id and conversation_id in conn.subscriptions
+            conn.presence
+            and conn.user_id == user_id
+            and conversation_id in conn.subscriptions
             for conn in self._conns
         )
 

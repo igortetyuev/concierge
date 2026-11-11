@@ -1374,3 +1374,57 @@ a {
   font-size: 0.8rem;
   text-align: center;
 }
+
+/* ---------- settings ---------- */
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-form input,
+.settings-form select {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+}
+
+.link-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.link-code {
+  font-family: ui-monospace, monospace;
+  font-size: 1.5rem;
+  letter-spacing: 0.15em;
+  padding: 8px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}

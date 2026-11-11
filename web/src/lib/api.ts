@@ -83,6 +83,51 @@ export interface VoiceQuickOut {
   transcript: string | null
 }
 
+export interface TelegramLinkOut {
+  linked: boolean
+  telegram_username: string | null
+  telegram_user_id: number | null
+  bot_username: string | null
+}
+
+export interface TelegramLinkCodeOut {
+  code: string
+  bot_username: string | null
+  expires_at: string
+}
+
+export interface AdminTelegramLinkOut {
+  user_id: number
+  username: string
+  telegram_user_id: number
+  telegram_username: string | null
+  linked_at: string | null
+}
+
+export interface AdminUserOut {
+  id: number
+  username: string
+  display_name: string
+  role: string
+  is_active: boolean
+}
+
+export interface TelegramBindingOut {
+  chat_id: number
+  thread_id: number
+  kind: string
+  conversation_id: number
+  title: string
+}
+
+export interface TelegramOverviewOut {
+  running: boolean
+  enabled: boolean
+  bot_username: string | null
+  links: number
+  bindings: TelegramBindingOut[]
+}
+
 export interface MemoryItemOut {
   id: number
   scope: 'user' | 'family'
@@ -303,6 +348,36 @@ export const apiClient = {
     }),
   search: (q: string, limit = 20) =>
     api<MessageOut[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  telegramLink: () => api<TelegramLinkOut>('/telegram/link'),
+  telegramLinkCode: () => post<TelegramLinkCodeOut>('/telegram/link-code'),
+  telegramUnlink: () =>
+    api<{ ok: boolean }>('/telegram/link', { method: 'DELETE' }),
+
+  adminTelegramLinks: () => api<AdminTelegramLinkOut[]>('/admin/telegram/links'),
+  adminTelegramAddLink: (
+    userId: number,
+    telegramUserId: number,
+    telegramUsername?: string,
+  ) =>
+    post<AdminTelegramLinkOut>('/admin/telegram/links', {
+      user_id: userId,
+      telegram_user_id: telegramUserId,
+      telegram_username: telegramUsername || null,
+    }),
+  adminTelegramRemoveLink: (userId: number) =>
+    api<{ ok: boolean }>(`/admin/telegram/links/${userId}`, { method: 'DELETE' }),
+  adminTelegramOverview: () =>
+    api<TelegramOverviewOut>('/admin/telegram/overview'),
+  listAdminUsers: () => api<AdminUserOut[]>('/admin/users'),
+
+  listGlobalSettings: () => api<Record<string, unknown>>('/settings/global'),
+  putGlobalSetting: (key: string, value: unknown) =>
+    api<{ ok: boolean }>('/settings/global', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    }),
 
   listMemory: () => api<MemoryItemOut[]>('/memory'),
   addMemory: (text: string, scope: 'user' | 'family') =>

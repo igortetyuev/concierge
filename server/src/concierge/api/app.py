@@ -10,7 +10,9 @@ from concierge.api.conversations import router as conversations_router
 from concierge.api.health import router as health_router
 from concierge.api.memory import router as memory_router
 from concierge.api.settings import router as settings_router
+from concierge.api.telegram import router as telegram_router
 from concierge.api.users import router as users_router
+from concierge.channels.telegram import gateway as telegram_gateway
 from concierge.core.db import dispose_engine
 from concierge.memory import indexer as memory_indexer
 from concierge.ws import router as ws_router
@@ -19,7 +21,9 @@ from concierge.ws import router as ws_router
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     memory_indexer.start_worker()
+    telegram_gateway.start_supervisor()
     yield
+    await telegram_gateway.stop_supervisor()
     await memory_indexer.stop_worker()
     await dispose_engine()
 
@@ -34,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations_router)
     app.include_router(attachments_router)
     app.include_router(memory_router)
+    app.include_router(telegram_router)
     app.include_router(ws_router)
     return app
 

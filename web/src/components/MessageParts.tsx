@@ -196,6 +196,9 @@ export default function MessageParts({
           }
           return <Markdown key={i} text={String(p.text ?? '')} />
         }
+        if (p.type === 'mention') {
+          return null
+        }
         if (p.type === 'tool') {
           return <ToolChip key={p.tool_call_id ?? i} name={String(p.name ?? 'tool')} status={p.status} />
         }

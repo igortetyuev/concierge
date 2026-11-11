@@ -13,6 +13,11 @@ from concierge.agent.models import (
 from concierge.auth import security
 from concierge.auth.dependencies import SessionDep, require
 from concierge.auth.models import Role, User
+from concierge.channels.telegram import gateway as tg_gateway
+from concierge.channels.telegram import service as tg_service
+from concierge.channels.telegram.models import TelegramBinding, TelegramLink
+from concierge.conversations.models import Conversation
+from concierge.settings import service as settings_service
 
 router = APIRouter(prefix="/admin")
 
@@ -571,3 +576,151 @@ async def delete_code_agent(
     await session.delete(agent)
     await session.commit()
     return {"ok": True}
+
+
+# ---------- telegram ----------
+
+
+class TelegramLinkIn(BaseModel):
+    user_id: int
+    telegram_user_id: int
+    telegram_username: str | None = None
+
+
+class TelegramLinkOut(BaseModel):
+    user_id: int
+    username: str
+    telegram_user_id: int
+    telegram_username: str | None
+    linked_at: Any
+
+
+@router.get("/telegram/links")
+async def list_telegram_links(
+    _: ManageUsers, session: SessionDep
+) -> list[TelegramLinkOut]:
+    rows = (
+        await session.execute(
+            select(TelegramLink, User)
+            .join(User, User.id == TelegramLink.user_id)
+            .order_by(TelegramLink.user_id)
+        )
+    ).all()
+    return [
+        TelegramLinkOut(
+            user_id=link.user_id,
+            username=user.username,
+            telegram_user_id=link.telegram_user_id,
+            telegram_username=link.telegram_username,
+            linked_at=link.linked_at,
+        )
+        for link, user in rows
+    ]
+
+
+@router.post("/telegram/links", status_code=201)
+async def create_telegram_link(
+    body: TelegramLinkIn, _: ManageUsers, session: SessionDep
+) -> TelegramLinkOut:
+    user = await session.get(User, body.user_id)
+    if user is None:
+        raise HTTPException(404, "user not found")
+    existing = await session.get(TelegramLink, body.user_id)
+    if existing is not None:
+        await session.delete(existing)
+    clash = (
+        await session.execute(
+            select(TelegramLink).where(
+                TelegramLink.telegram_user_id == body.telegram_user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if clash is not None:
+        await session.delete(clash)
+    link = TelegramLink(
+        user_id=body.user_id,
+        telegram_user_id=body.telegram_user_id,
+        telegram_username=body.telegram_username,
+    )
+    session.add(link)
+    await session.commit()
+    return TelegramLinkOut(
+        user_id=link.user_id,
+        username=user.username,
+        telegram_user_id=link.telegram_user_id,
+        telegram_username=link.telegram_username,
+        linked_at=link.linked_at,
+    )
+
+
+@router.delete("/telegram/links/{user_id}")
+async def delete_telegram_link(
+    user_id: int, _: ManageUsers, session: SessionDep
+) -> dict[str, bool]:
+    if await session.get(TelegramLink, user_id) is None:
+        raise HTTPException(404, "link not found")
+    dropped = await tg_service.unlink_user(session, user_id)
+    for chat_id, thread_id in dropped:
+        await tg_gateway.binding_dropped(chat_id, thread_id)
+    return {"ok": True}
+
+
+class TelegramBindingOut(BaseModel):
+    chat_id: int
+    thread_id: int
+    kind: str
+    conversation_id: int
+    title: str
+
+
+class TelegramOverviewOut(BaseModel):
+    running: bool
+    enabled: bool
+    bot_username: str | None
+    links: int
+    bindings: list[TelegramBindingOut]
+
+
+@router.get("/telegram/overview")
+async def telegram_overview(
+    _: ManageUsers, session: SessionDep
+) -> TelegramOverviewOut:
+    enabled = bool(
+        await settings_service.get_global(session, "telegram.enabled", False)
+    )
+    bot_username = await settings_service.get_global(
+        session, "telegram.bot_username"
+    )
+    links = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(TelegramLink)
+            )
+        ).scalar_one()
+    )
+    rows = (
+        await session.execute(
+            select(TelegramBinding, Conversation.title)
+            .join(
+                Conversation,
+                Conversation.id == TelegramBinding.conversation_id,
+            )
+            .order_by(TelegramBinding.chat_id, TelegramBinding.thread_id)
+        )
+    ).all()
+    return TelegramOverviewOut(
+        running=tg_gateway.is_running(),
+        enabled=enabled,
+        bot_username=str(bot_username) if bot_username else None,
+        links=links,
+        bindings=[
+            TelegramBindingOut(
+                chat_id=b.chat_id,
+                thread_id=b.thread_id,
+                kind=b.kind,
+                conversation_id=b.conversation_id,
+                title=title,
+            )
+            for b, title in rows
+        ],
+    )

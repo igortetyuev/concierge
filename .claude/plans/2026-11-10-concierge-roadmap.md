@@ -195,6 +195,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 8 — Telegram-бот (аналог Hermes gateway)
 
+**Status: done — 2026-11-11, devin-desktop/main, finished_at: 2026-11-11.**
+
 1. Миграция: `telegram_links`, `telegram_link_codes`, `telegram_bindings`, `telegram_messages`. Настройки `telegram.enabled`, `telegram.bot_token` (секрет), `telegram.allowed_user_ids` (доп. allowlist, опционально), `telegram.voice_reply` (off/on-request/always).
 2. `concierge.channels.telegram` на aiogram 3: запуск long polling как задача приложения FastAPI (lifespan) при `telegram.enabled`; middleware авторизации: `from_user.id` → `telegram_links` → пользователь консьержа; неизвестный пользователь получает сообщение с инструкцией «получите код в приложении → `/start <код>`» и игнорируется далее (rate-limit).
 3. Привязка: в PWA (профиль) кнопка «Привязать Telegram» генерирует код (TTL 10 мин), `/start <код>` создаёт `telegram_links`; admin в панели видит/удаляет привязки и может привязать по известному `telegram_user_id`. Permission `telegram` на роли.

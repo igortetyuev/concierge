@@ -283,7 +283,7 @@ class AgentRuntime:
             ptype = p.get("type")
             if ptype == "text":
                 chunks.append(str(p.get("text", "")))
-            elif ptype == "tool":
+            elif ptype in ("tool", "mention"):
                 continue
             elif (aid := media_service.part_attachment_id(p)) is not None and (
                 att := atts.get(aid)

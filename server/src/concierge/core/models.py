@@ -7,6 +7,12 @@ from concierge.agent.models import (
     ModelProvider,
 )
 from concierge.auth.models import Device, Invite, Role, User
+from concierge.channels.telegram.models import (
+    TelegramBinding,
+    TelegramLink,
+    TelegramLinkCode,
+    TelegramMessage,
+)
 from concierge.conversations.models import (
     Conversation,
     ConversationMember,
@@ -33,5 +39,9 @@ __all__ = [
     "Run",
     "Setting",
     "SettingScope",
+    "TelegramBinding",
+    "TelegramLink",
+    "TelegramLinkCode",
+    "TelegramMessage",
     "User",
 ]

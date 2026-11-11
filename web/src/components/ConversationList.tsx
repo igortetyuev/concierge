@@ -18,7 +18,7 @@ import {
 import { messageText } from '../store/messages'
 import NewGroupDialog from './NewGroupDialog'
 import VoiceQuick from './VoiceQuick'
-import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconUsers } from './icons'
+import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconSettings, IconUsers } from './icons'
 
 export default function ConversationList() {
   const navigate = useNavigate()
@@ -87,6 +87,14 @@ export default function ConversationList() {
           aria-label="Память"
         >
           <IconBook />
+        </Link>
+        <Link
+          to="/settings"
+          className="icon-btn"
+          title="Настройки"
+          aria-label="Настройки"
+        >
+          <IconSettings />
         </Link>
         <VoiceQuick />
       </header>
