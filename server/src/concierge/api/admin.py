@@ -10,6 +10,7 @@ from concierge.agent.models import (
     CodeAgent,
     McpServer,
     ModelProvider,
+    NamedModel,
 )
 from concierge.auth import security
 from concierge.auth.dependencies import SessionDep, require
@@ -392,6 +393,9 @@ async def delete_provider(
             CapabilityBinding.provider_id == provider_id
         )
     )
+    await session.execute(
+        delete(NamedModel).where(NamedModel.provider_id == provider_id)
+    )
     audit.record(
         session,
         "admin.provider.delete",
@@ -522,6 +526,137 @@ async def delete_binding(
         ip=client_ip(request),
     )
     await session.delete(binding)
+    await session.commit()
+    return {"ok": True}
+
+
+# ---------- named models ----------
+
+
+class NamedModelIn(BaseModel):
+    name: str
+    provider_id: int
+    model: str
+    params: dict[str, Any] = {}
+    system_prompt: str | None = None
+    enabled: bool = True
+
+
+class NamedModelPatch(BaseModel):
+    name: str | None = None
+    provider_id: int | None = None
+    model: str | None = None
+    params: dict[str, Any] | None = None
+    system_prompt: str | None = None
+    enabled: bool | None = None
+
+
+class NamedModelOut(BaseModel):
+    id: int
+    name: str
+    provider_id: int
+    model: str
+    params: dict[str, Any]
+    system_prompt: str | None
+    enabled: bool
+
+    @classmethod
+    def of(cls, m: NamedModel) -> "NamedModelOut":
+        return cls(
+            id=m.id,
+            name=m.name,
+            provider_id=m.provider_id,
+            model=m.model,
+            params=m.params,
+            system_prompt=m.system_prompt,
+            enabled=m.enabled,
+        )
+
+
+@router.get("/named-models")
+async def list_named_models(
+    _: ManageProviders, session: SessionDep
+) -> list[NamedModelOut]:
+    rows = (
+        await session.execute(select(NamedModel).order_by(NamedModel.id))
+    ).scalars()
+    return [NamedModelOut.of(m) for m in rows]
+
+
+@router.post("/named-models", status_code=201)
+async def create_named_model(
+    body: NamedModelIn,
+    request: Request,
+    admin: ManageProviders,
+    session: SessionDep,
+) -> NamedModelOut:
+    if await session.get(ModelProvider, body.provider_id) is None:
+        raise HTTPException(404, "provider not found")
+    named = NamedModel(**body.model_dump())
+    session.add(named)
+    audit.record(
+        session,
+        "admin.named_model.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=named.name,
+        detail={"model": named.model},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return NamedModelOut.of(named)
+
+
+@router.patch("/named-models/{model_id}")
+async def patch_named_model(
+    model_id: int,
+    body: NamedModelPatch,
+    request: Request,
+    admin: ManageProviders,
+    session: SessionDep,
+) -> NamedModelOut:
+    named = await session.get(NamedModel, model_id)
+    if named is None:
+        raise HTTPException(404, "named model not found")
+    data = body.model_dump(exclude_unset=True)
+    if "provider_id" in data and await session.get(
+        ModelProvider, data["provider_id"]
+    ) is None:
+        raise HTTPException(404, "provider not found")
+    for key, value in data.items():
+        setattr(named, key, value)
+    audit.record(
+        session,
+        "admin.named_model.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=named.name,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return NamedModelOut.of(named)
+
+
+@router.delete("/named-models/{model_id}")
+async def delete_named_model(
+    model_id: int,
+    request: Request,
+    admin: ManageProviders,
+    session: SessionDep,
+) -> dict[str, bool]:
+    named = await session.get(NamedModel, model_id)
+    if named is None:
+        raise HTTPException(404, "named model not found")
+    audit.record(
+        session,
+        "admin.named_model.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=named.name,
+        ip=client_ip(request),
+    )
+    await session.delete(named)
     await session.commit()
     return {"ok": True}
 

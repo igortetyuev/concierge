@@ -24,7 +24,7 @@ async def synthesize_speech(
 ) -> tuple[bytes, str] | None:
     """Synthesize `text` to (audio bytes, mime); None when no TTS is bound."""
     # Lazy: concierge.agent imports the media pipeline at module load.
-    from concierge.agent.providers import resolve_ref
+    from concierge.agent.providers import http_base_url, provider_api_key
     from concierge.agent.service import get_capability_binding
 
     binding = await get_capability_binding(session, "tts", user.role_id)
@@ -36,11 +36,11 @@ async def synthesize_speech(
     kind = provider.kind
     if kind == "test":
         return _test_wav(), "audio/wav"
-    api_key = await resolve_ref(session, user, provider.api_key_ref)
+    api_key = await provider_api_key(session, user, provider)
     if kind in ("openai", "openai-compatible"):
         voice = str(binding.params.get("voice") or "alloy")
         return await _openai_speech(
-            provider.base_url, binding.model, voice, api_key, text
+            http_base_url(provider), binding.model, voice, api_key, text
         )
     log.warning("tts: provider kind %r unsupported", kind)
     return None

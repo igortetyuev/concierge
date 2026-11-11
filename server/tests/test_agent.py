@@ -7,7 +7,12 @@ import httpx
 from sqlalchemy import select
 from starlette.testclient import TestClient
 
-from concierge.agent.models import CapabilityBinding, McpServer, ModelProvider
+from concierge.agent.models import (
+    CapabilityBinding,
+    McpServer,
+    ModelProvider,
+    NamedModel,
+)
 from concierge.agent.providers import get_model
 from concierge.agent.runtime import get_runtime
 from concierge.api.app import create_app
@@ -53,6 +58,32 @@ async def _add_provider(
                 model="test-model",
                 params=params or {},
                 role_id=role_id,
+            )
+        )
+        await session.commit()
+
+
+async def _add_named_model(
+    name: str = "Алиса",
+    params: dict | None = None,
+    provider_kind: str = "test",
+    enabled: bool = True,
+) -> None:
+    global _provider_seq
+    _provider_seq += 1
+    async with db.get_sessionmaker()() as session:
+        provider = ModelProvider(
+            name=f"p-named-{_provider_seq}", kind=provider_kind
+        )
+        session.add(provider)
+        await session.flush()
+        session.add(
+            NamedModel(
+                name=name,
+                provider_id=provider.id,
+                model="test-model",
+                params=params or {},
+                enabled=enabled,
             )
         )
         await session.commit()
@@ -201,6 +232,41 @@ async def test_deepseek_provider_kind(engine, monkeypatch) -> None:
     assert bound.model.model_name == "deepseek-flash"
 
 
+async def test_base_url_suffix_normalized_at_use(engine) -> None:
+    from concierge.agent.providers import http_base_url
+
+    async with db.get_sessionmaker()() as session:
+        provider = ModelProvider(
+            name="p-ya",
+            kind="openai-compatible",
+            base_url="https://ai.api.cloud.yandex.net/v1/chat/completions",
+        )
+        session.add(provider)
+        await session.commit()
+        assert http_base_url(provider) == "https://ai.api.cloud.yandex.net/v1"
+        provider.base_url = "http://x/v1/"
+        assert http_base_url(provider) == "http://x/v1"
+
+
+async def test_provider_api_key_literal_fallback(engine) -> None:
+    """A raw key pasted into api_key_ref is used as the key itself."""
+    from concierge.agent.providers import provider_api_key
+
+    user = await make_user("rawkey", "adult")
+    async with db.get_sessionmaker()() as session:
+        provider = ModelProvider(
+            name="p-raw", kind="openai-compatible", api_key_ref="AQVN-raw-key"
+        )
+        session.add(provider)
+        await session.commit()
+        assert (
+            await provider_api_key(session, user, provider) == "AQVN-raw-key"
+        )
+        # env ref wins when it resolves
+        provider.api_key_ref = "PATH"
+        assert await provider_api_key(session, user, provider) != "PATH"
+
+
 async def test_no_binding_returns_none(engine) -> None:
     user = await make_user("u3", "adult")
     async with db.get_sessionmaker()() as session:
@@ -233,6 +299,81 @@ async def test_agent_run_persists_and_uses_tools(
     # TestModel call_tools="all" -> both core tools were exposed and called.
     tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
     assert {"search_messages", "current_datetime"} <= tool_names
+
+
+async def test_ask_model_permission_gate() -> None:
+    from concierge.agent import tools
+
+    allow_all = {"tools": {"allow": ["*"], "deny": []}}
+    assert "ask_model" in tools.allowed_tool_names(allow_all)
+    denied = {"tools": {"allow": ["*"], "deny": ["ask_model"]}}
+    assert "ask_model" not in tools.allowed_tool_names(denied)
+
+
+async def test_ask_model_tool_calls_named_model(engine) -> None:
+    from types import SimpleNamespace
+
+    from concierge.agent.tools import ToolDeps, make_ask_model_tool
+
+    await _add_named_model("Алиса", params={"custom_output_text": "ответ Алисы"})
+    user = await make_user("asker", "adult")
+    tool = make_ask_model_tool(["Алиса"])
+    ctx = SimpleNamespace(deps=ToolDeps(user_id=user.id, conversation_id=0))
+
+    res = await tool(ctx, "Алиса", "какой ГОСТ за борщ?")  # type: ignore[arg-type]
+    assert res == {"model": "Алиса", "answer": "ответ Алисы"}
+
+    res = await tool(ctx, "лиля", "q")  # type: ignore[arg-type]
+    assert "error" in res and res["available"] == ["Алиса"]
+
+
+async def test_ask_model_exposed_in_run(
+    engine, client: httpx.AsyncClient
+) -> None:
+    await _add_provider(
+        "chat",
+        params={
+            "custom_output_text": "ok",
+            "call_tools": ["ask_model"],
+        },
+    )
+    await _add_named_model("Алиса")
+    await make_user("asker2", "adult")
+    token = await login(client, "asker2")
+    cid = await _make_conv(client, token)
+    msg = await _post_and_collect(client, token, cid, "спроси Алису про борщ")
+
+    run = await _run_and_wait(cid, msg["id"])
+    assert run.status == "done"
+    async with db.get_sessionmaker()() as session:
+        reply = (
+            await session.execute(
+                select(Message).where(Message.run_id == run.id)
+            )
+        ).scalar_one()
+    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
+    assert "ask_model" in tool_names
+
+
+async def test_ask_model_hidden_without_named_models(
+    engine, client: httpx.AsyncClient
+) -> None:
+    # Without named_models rows the tool isn't registered at all, so a
+    # TestModel demanding it hits UnexpectedToolBehavior and the run fails.
+    await _add_provider(
+        "chat",
+        params={
+            "custom_output_text": "ok",
+            "call_tools": ["ask_model"],
+        },
+    )
+    await make_user("asker3", "adult")
+    token = await login(client, "asker3")
+    cid = await _make_conv(client, token)
+    msg = await _post_and_collect(client, token, cid, "спроси Алису")
+
+    run = await _run_and_wait(cid, msg["id"])
+    assert run.status == "failed"
 
 
 async def test_tools_deny_list(engine, client: httpx.AsyncClient) -> None:

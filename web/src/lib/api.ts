@@ -140,6 +140,16 @@ export interface BindingOut {
   role_id: number | null
 }
 
+export interface NamedModelOut {
+  id: number
+  name: string
+  provider_id: number
+  model: string
+  params: Record<string, unknown>
+  system_prompt: string | null
+  enabled: boolean
+}
+
 export interface McpServerOut {
   id: number
   name: string
@@ -531,6 +541,20 @@ export const apiClient = {
     api<{ ok: boolean }>(`/admin/capability-bindings/${id}`, {
       method: 'DELETE',
     }),
+
+  listNamedModels: () => api<NamedModelOut[]>('/admin/named-models'),
+  createNamedModel: (body: {
+    name: string
+    provider_id: number
+    model: string
+    params?: Record<string, unknown>
+    system_prompt?: string
+    enabled?: boolean
+  }) => post<NamedModelOut>('/admin/named-models', body),
+  patchNamedModel: (id: number, patch: Partial<NamedModelOut>) =>
+    patchFn<NamedModelOut>(`/admin/named-models/${id}`, patch),
+  deleteNamedModel: (id: number) =>
+    api<{ ok: boolean }>(`/admin/named-models/${id}`, { method: 'DELETE' }),
 
   listMcpServers: () => api<McpServerOut[]>('/admin/mcp-servers'),
   createMcpServer: (body: {

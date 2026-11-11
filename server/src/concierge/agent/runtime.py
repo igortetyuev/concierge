@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.agent import mcp, prompt, providers, title, tools
+from concierge.agent import service as agent_service
 from concierge.agent.tools import ToolDeps, message_text
 from concierge.auth.models import User
 from concierge.channels import ChannelEvent, Hub, get_hub
@@ -124,6 +125,14 @@ class AgentRuntime:
             )
             toolsets = await mcp.build_toolsets(session, user)
             funcs = tools.core_tools(user.role.permissions)
+            if "ask_model" in tools.allowed_tool_names(
+                user.role.permissions
+            ) and (
+                named_names := await agent_service.enabled_named_model_names(
+                    session
+                )
+            ):
+                funcs.append(tools.make_ask_model_tool(named_names))
             capabilities = tools.allowed_capabilities(user.role.permissions)
             history = self._build_history(
                 history_rows, conv, member_names, atts

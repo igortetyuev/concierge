@@ -16,6 +16,7 @@ import trafilatura
 from pydantic_ai import Agent, RunContext
 
 from concierge.agent import providers
+from concierge.agent import service as agent_service
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
@@ -378,6 +379,58 @@ async def delegate_coding_task(
         )
 
 
+ASK_MODEL_ANSWER_MAX = 8000
+
+
+def make_ask_model_tool(names: list[str]) -> Callable[..., Any]:
+    """Build the ask_model tool with `model` restricted to `names`.
+
+    Built per run: the enum in the tool schema mirrors enabled named_models.
+    """
+    model_enum = Literal[tuple(names)]  # type: ignore[valid-type]
+
+    async def ask_model(
+        ctx: RunContext[ToolDeps], model: str, question: str
+    ) -> dict[str, Any]:
+        """Ask a named external model a question and return its reply.
+
+        Use when the user asks to consult a specific named model
+        ("спроси Алису …"). The named model sees only `question` — a
+        self-contained, single-shot prompt without chat history.
+        """
+        async with get_sessionmaker()() as session:
+            user = await session.get(User, ctx.deps.user_id)
+            named = await agent_service.get_named_model(session, model)
+            if user is None:
+                return {"error": "user not found"}
+            if named is None:
+                return {
+                    "error": f"unknown or disabled model {model!r}",
+                    "available": names,
+                }
+            bound = await providers.bind_named_model(session, user, named)
+            system_prompt, display = named.system_prompt, named.name
+        if bound is None:
+            return {"error": f"model {display} is unavailable"}
+        try:
+            agent = Agent(
+                bound.model,
+                instructions=system_prompt,
+                model_settings=bound.settings,
+            )
+            result = await agent.run(question)
+        except Exception as e:
+            log.warning("ask_model(%s) failed: %s", display, e)
+            return {"error": f"{display} failed: {e}"}
+        return {
+            "model": display,
+            "answer": str(result.output)[:ASK_MODEL_ANSWER_MAX],
+        }
+
+    ask_model.__annotations__["model"] = model_enum
+    return ask_model
+
+
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
     f.__name__: f
     for f in (
@@ -396,10 +449,14 @@ CORE_TOOLS: dict[str, Callable[..., Any]] = {
 # they share the tools.allow/deny lists in role permissions.
 CAPABILITY_TOOLS = ("web_search",)
 
+# Tools built per run from DB state rather than static functions; they share
+# the tools.allow/deny lists too.
+DYNAMIC_TOOLS = ("ask_model",)
+
 
 def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
     """Tool/capability names visible to a role under permissions.tools."""
-    all_names = [*CORE_TOOLS, *CAPABILITY_TOOLS]
+    all_names = [*CORE_TOOLS, *CAPABILITY_TOOLS, *DYNAMIC_TOOLS]
     if permissions.get("*"):
         names = list(all_names)
     else:

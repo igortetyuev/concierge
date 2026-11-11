@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from concierge.agent.providers import resolve_ref
+from concierge.agent.providers import http_base_url, provider_api_key
 from concierge.agent.service import get_capability_binding
 from concierge.auth.models import User
 
@@ -88,11 +88,13 @@ async def get_embedder(
     slug = model_slug(binding.model)
     if provider.kind == "test":
         return BoundEmbedder(_test_embed, slug, label)
-    base_url = provider.base_url or DEFAULT_BASE_URLS.get(provider.kind, "")
+    base_url = http_base_url(provider) or DEFAULT_BASE_URLS.get(
+        provider.kind, ""
+    )
     if not base_url:
         log.warning("embedding provider %r has no base_url", provider.name)
         return None
-    api_key = await resolve_ref(session, user, provider.api_key_ref)
+    api_key = await provider_api_key(session, user, provider)
     return BoundEmbedder(
         _http_embed(base_url, binding.model, api_key), slug, label
     )

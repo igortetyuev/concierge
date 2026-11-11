@@ -1791,6 +1791,27 @@ a {
   font-weight: 600;
 }
 
+.admin-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 10px;
+}
+
+.admin-section-head:not(:first-child) {
+  margin-top: 16px;
+}
+
+.admin-section-head h3 {
+  margin: 0;
+}
+
+.admin-section-head .icon-btn {
+  min-width: 32px;
+  min-height: 32px;
+  flex: none;
+}
+
 .admin-edit {
   margin: 4px 0 12px;
   padding: 10px;

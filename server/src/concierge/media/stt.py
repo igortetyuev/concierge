@@ -23,7 +23,7 @@ async def transcribe_audio(
 ) -> str | None:
     """Transcribe a normalized wav file; None when no STT provider is bound."""
     # Lazy: concierge.agent imports the media pipeline at module load.
-    from concierge.agent.providers import resolve_ref
+    from concierge.agent.providers import http_base_url, provider_api_key
     from concierge.agent.service import get_capability_binding
 
     binding = await get_capability_binding(session, "stt", user.role_id)
@@ -37,10 +37,10 @@ async def transcribe_audio(
         if "transcript" in binding.params:
             return str(binding.params["transcript"])
         return "test transcript"
-    api_key = await resolve_ref(session, user, provider.api_key_ref)
+    api_key = await provider_api_key(session, user, provider)
     if kind == "deepgram":
         return await _deepgram(
-            provider.base_url or "https://api.deepgram.com",
+            http_base_url(provider) or "https://api.deepgram.com",
             binding.model,
             binding.params.get("language"),
             api_key,
@@ -48,7 +48,11 @@ async def transcribe_audio(
         )
     if kind in ("openai", "openai-compatible"):
         return await _openai_whisper(
-            provider.base_url, binding.model, binding.params.get("language"), api_key, wav_path
+            http_base_url(provider),
+            binding.model,
+            binding.params.get("language"),
+            api_key,
+            wav_path,
         )
     log.warning("stt: provider kind %r unsupported", kind)
     return None

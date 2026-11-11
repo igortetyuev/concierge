@@ -154,6 +154,82 @@ async def test_role_specific_binding_wins(engine, client: httpx.AsyncClient) -> 
         assert b_other is not None and b_other.model == "default-model"
 
 
+async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:
+    await make_user("admin", "admin")
+    token = await login(client, "admin")
+
+    p = await client.post(
+        "/admin/providers",
+        json={
+            "name": "yandex",
+            "kind": "openai-compatible",
+            "base_url": "https://ai.api.cloud.yandex.net/v1/chat/completions",
+            "api_key_ref": "yandex_api_key",
+        },
+        headers=auth(token),
+    )
+    assert p.status_code == 201
+    # stored verbatim; the /chat/completions suffix is normalized at use time
+    assert p.json()["base_url"] == (
+        "https://ai.api.cloud.yandex.net/v1/chat/completions"
+    )
+    pid = p.json()["id"]
+
+    patched_p = await client.patch(
+        f"/admin/providers/{pid}",
+        json={"base_url": "https://ai.api.cloud.yandex.net/v1"},
+        headers=auth(token),
+    )
+    assert patched_p.status_code == 200
+    assert patched_p.json()["base_url"] == "https://ai.api.cloud.yandex.net/v1"
+
+    created = await client.post(
+        "/admin/named-models",
+        json={
+            "name": "Алиса",
+            "provider_id": pid,
+            "model": "aliceai-llm/latest",
+            "system_prompt": "Отвечай как Алиса.",
+        },
+        headers=auth(token),
+    )
+    assert created.status_code == 201, created.text
+    mid = created.json()["id"]
+
+    listed = await client.get("/admin/named-models", headers=auth(token))
+    assert [m["name"] for m in listed.json()] == ["Алиса"]
+
+    patched = await client.patch(
+        f"/admin/named-models/{mid}",
+        json={"enabled": False},
+        headers=auth(token),
+    )
+    assert patched.status_code == 200
+    assert patched.json()["enabled"] is False
+
+    bad = await client.post(
+        "/admin/named-models",
+        json={"name": "Лиля", "provider_id": 9999, "model": "m"},
+        headers=auth(token),
+    )
+    assert bad.status_code == 404
+
+    assert (
+        await client.delete(f"/admin/named-models/{mid}", headers=auth(token))
+    ).status_code == 200
+    # deleting a provider removes its named models
+    await client.post(
+        "/admin/named-models",
+        json={"name": "Лилия", "provider_id": pid, "model": "m"},
+        headers=auth(token),
+    )
+    assert (
+        await client.delete(f"/admin/providers/{pid}", headers=auth(token))
+    ).status_code == 200
+    listed = await client.get("/admin/named-models", headers=auth(token))
+    assert listed.json() == []
+
+
 async def test_mcp_and_code_agent_crud(engine, client: httpx.AsyncClient) -> None:
     await make_user("admin", "admin")
     token = await login(client, "admin")

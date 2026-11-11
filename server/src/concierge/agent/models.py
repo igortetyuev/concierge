@@ -35,6 +35,22 @@ class CapabilityBinding(Base):
     provider: Mapped[ModelProvider] = relationship(lazy="joined")
 
 
+class NamedModel(Base):
+    """A model callable by name from the chat agent (the ask_model tool)."""
+
+    __tablename__ = "named_models"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("model_providers.id"))
+    model: Mapped[str] = mapped_column(String(128))
+    params: Mapped[JsonDict] = mapped_column(JSONBType, default=dict)
+    system_prompt: Mapped[str | None] = mapped_column(String(2048))
+    enabled: Mapped[bool] = mapped_column(default=True)
+
+    provider: Mapped[ModelProvider] = relationship(lazy="joined")
+
+
 class McpServer(Base):
     __tablename__ = "mcp_servers"
 

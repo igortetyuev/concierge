@@ -10,7 +10,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.settings import ModelSettings
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from concierge.agent.models import CapabilityBinding, ModelProvider
+from concierge.agent.models import CapabilityBinding, ModelProvider, NamedModel
 from concierge.agent.service import get_capability_binding
 from concierge.auth.models import User
 from concierge.settings import service as settings_service
@@ -78,10 +78,31 @@ async def resolve_ref_dict(
     return {}
 
 
+def http_base_url(provider: ModelProvider) -> str | None:
+    """base_url for building request paths, or None.
+
+    A pasted full endpoint (.../chat/completions) is normalized back to the
+    API root — clients append that path segment themselves.
+    """
+    url = (provider.base_url or "").rstrip("/")
+    if url.endswith("/chat/completions"):
+        url = url[: -len("/chat/completions")]
+    return url or None
+
+
+async def provider_api_key(
+    session: AsyncSession, user: User, provider: ModelProvider
+) -> str | None:
+    """Resolve api_key_ref to a named setting/env; if unresolvable, treat
+    the ref itself as the literal key (raw keys pasted into the field)."""
+    ref = provider.api_key_ref
+    return (await resolve_ref(session, user, ref)) or (ref or None)
+
+
 def _provider_kwargs(provider: ModelProvider, api_key: str | None) -> dict[str, Any]:
     return {
         k: v
-        for k, v in {"base_url": provider.base_url, "api_key": api_key}.items()
+        for k, v in {"base_url": http_base_url(provider), "api_key": api_key}.items()
         if v
     }
 
@@ -130,31 +151,48 @@ _TEST_MODEL_KWARGS = set(inspect.signature(TestModel.__init__).parameters) - {
 }
 
 
-async def _bound(
-    session: AsyncSession, user: User, binding: CapabilityBinding
+async def _bind(
+    session: AsyncSession,
+    user: User,
+    provider: ModelProvider | None,
+    model_name: str,
+    params: dict[str, Any],
 ) -> BoundModel | None:
-    provider = binding.provider
     if provider is None or not provider.enabled:
         return None
-    label = f"{provider.name}/{binding.model}"
+    label = f"{provider.name}/{model_name}"
     if provider.kind == "test":
         # Test-only provider kind for e2e tests without real LLM calls.
         # Its default profile claims native-tool support but _request() then
         # raises; report no native tools so capabilities use local fallbacks.
         from pydantic_ai.profiles import ModelProfile
 
-        kwargs = {
-            k: v for k, v in binding.params.items() if k in _TEST_MODEL_KWARGS
-        }
+        kwargs = {k: v for k, v in params.items() if k in _TEST_MODEL_KWARGS}
         kwargs.setdefault(
             "profile", ModelProfile(supported_native_tools=frozenset())
         )
         return BoundModel(TestModel(**kwargs), label, ModelSettings())
-    api_key = await resolve_ref(session, user, provider.api_key_ref)
-    model = _build_model(provider, binding.model, api_key)
+    api_key = await provider_api_key(session, user, provider)
+    model = _build_model(provider, model_name, api_key)
     if model is None:
         return None
-    return BoundModel(model, label, _model_settings(binding.params))
+    return BoundModel(model, label, _model_settings(params))
+
+
+async def _bound(
+    session: AsyncSession, user: User, binding: CapabilityBinding
+) -> BoundModel | None:
+    return await _bind(
+        session, user, binding.provider, binding.model, binding.params
+    )
+
+
+async def bind_named_model(
+    session: AsyncSession, user: User, named: NamedModel
+) -> BoundModel | None:
+    return await _bind(
+        session, user, named.provider, named.model, named.params
+    )
 
 
 async def get_model(
