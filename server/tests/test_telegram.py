@@ -436,6 +436,36 @@ async def test_plain_group_binding(engine, tg) -> None:
         assert binding is not None and binding.kind == "group"
 
 
+async def test_bound_group_stays_group_with_one_member(
+    engine, tg, client: httpx.AsyncClient
+) -> None:
+    """A telegram-bound group keeps kind=group at a single linked member —
+    unlinked chat participants still write there."""
+    u1 = await make_user("tg1", "adult")
+    u2 = await make_user("tg2", "adult")
+    await _link(u1.id, 510)
+    await _link(u2.id, 520, "second")
+    token = await login(client, "tg1")
+
+    await tg.service.handle_message(
+        _im(chat_id=-300, tg_user_id=510, is_private=False, message_id=1)
+    )
+    await tg.service.handle_message(
+        _im(chat_id=-300, tg_user_id=520, is_private=False, message_id=2)
+    )
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.kind == "group"
+
+    resp = await client.delete(
+        f"/conversations/{conv.id}/members/{u2.id}", headers=auth(token)
+    )
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "group"
+    assert resp.json()["reply_mode"] == "mention"
+
+
 async def test_web_mirror_and_echo_suppression(
     engine, client: httpx.AsyncClient, tg
 ) -> None:

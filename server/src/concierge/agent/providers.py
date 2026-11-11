@@ -139,9 +139,16 @@ async def _bound(
     label = f"{provider.name}/{binding.model}"
     if provider.kind == "test":
         # Test-only provider kind for e2e tests without real LLM calls.
+        # Its default profile claims native-tool support but _request() then
+        # raises; report no native tools so capabilities use local fallbacks.
+        from pydantic_ai.profiles import ModelProfile
+
         kwargs = {
             k: v for k, v in binding.params.items() if k in _TEST_MODEL_KWARGS
         }
+        kwargs.setdefault(
+            "profile", ModelProfile(supported_native_tools=frozenset())
+        )
         return BoundModel(TestModel(**kwargs), label, ModelSettings())
     api_key = await resolve_ref(session, user, provider.api_key_ref)
     model = _build_model(provider, binding.model, api_key)

@@ -172,12 +172,24 @@ class CreateConversationBody(BaseModel):
 async def create_conversation(
     body: CreateConversationBody, user: CurrentUser, session: SessionDep
 ) -> ConversationOut:
+    # kind follows the member count: a "group" without other members is personal.
+    kind = "group" if body.kind == "group" and body.member_ids else "personal"
     conv = await service.create_conversation(
-        session, user, body.kind, body.title, body.member_ids
+        session, user, kind, body.title, body.member_ids
     )
     if conv is None:
         raise HTTPException(400, "unknown member user ids")
-    return await _conv_out(session, conv)
+    out = await _conv_out(session, conv)
+    # Nobody is subscribed to a brand-new conversation yet — fan out by user.
+    await get_hub().publish_users(
+        {m.user_id for m in conv.members},
+        ChannelEvent(
+            "conversation.updated",
+            conv.id,
+            {"conversation": out.model_dump(mode="json")},
+        ),
+    )
+    return out
 
 
 @router.get("/conversations")

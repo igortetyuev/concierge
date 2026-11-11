@@ -30,8 +30,8 @@ export function connectRealtime(): void {
   connected = true
   ws.setHandlers(handleEvent, onOpen)
   ws.start()
-  // Belt & braces: events cover most updates; this catches conversations
-  // created elsewhere (no event exists for them yet) while visible.
+  // Belt & braces: events cover most updates; this catches anything the
+  // realtime stream missed while visible.
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') void resync()
   }, 60_000)

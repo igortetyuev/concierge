@@ -148,7 +148,7 @@ export default function DetailsPanel({ convId }: { convId: number }) {
               )}
             </div>
           ))}
-          {canManage && conv.kind === 'group' && candidates.length > 0 && (
+          {canManage && candidates.length > 0 && (
             <div className="member-add">
               <select value={pickUser} onChange={(e) => setPickUser(e.target.value)}>
                 <option value="">Добавить участника…</option>

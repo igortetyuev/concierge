@@ -99,6 +99,44 @@ async def test_group_membership_and_visibility(
     ).status_code == 400
 
 
+async def test_kind_follows_membership(
+    engine, client: httpx.AsyncClient
+) -> None:
+    await make_user("alice", "adult")
+    bob = await make_user("bob", "adult")
+    token_a = await login(client, "alice")
+    token_b = await login(client, "bob")
+
+    # A "group" request without other members creates a personal session.
+    solo = await _create(client, token_a, kind="group")
+    assert solo["kind"] == "personal"
+    assert solo["reply_mode"] == "always"
+
+    conv = await _create(client, token_a)
+    assert conv["kind"] == "personal"
+
+    # Adding a member turns a personal session into a group.
+    resp = await client.post(
+        f"/conversations/{conv['id']}/members",
+        json={"user_ids": [bob.id]},
+        headers=auth(token_a),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "group"
+    assert resp.json()["reply_mode"] == "mention"
+    assert (
+        await client.get(f"/conversations/{conv['id']}", headers=auth(token_b))
+    ).status_code == 200
+
+    # Back to a single member — the session is personal again.
+    resp = await client.delete(
+        f"/conversations/{conv['id']}/members/{bob.id}", headers=auth(token_a)
+    )
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "personal"
+    assert resp.json()["reply_mode"] == "always"
+
+
 async def test_patch_and_archive(engine, client: httpx.AsyncClient) -> None:
     await make_user("alice", "adult")
     bob = await make_user("bob", "adult")

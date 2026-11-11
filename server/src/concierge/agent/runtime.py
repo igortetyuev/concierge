@@ -10,6 +10,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     PartDeltaEvent,
     PartStartEvent,
     RetryPromptPart,
@@ -122,6 +124,7 @@ class AgentRuntime:
             )
             toolsets = await mcp.build_toolsets(session, user)
             funcs = tools.core_tools(user.role.permissions)
+            capabilities = tools.allowed_capabilities(user.role.permissions)
             history = self._build_history(
                 history_rows, conv, member_names, atts
             )
@@ -152,6 +155,7 @@ class AgentRuntime:
             instructions=instructions,
             tools=funcs,
             toolsets=toolsets,
+            capabilities=capabilities,
             model_settings=bound.settings,
         )
         tool_parts: list[dict[str, Any]] = []
@@ -194,6 +198,40 @@ class AgentRuntime:
                         tool_parts.append(part)
                         await self._emit(
                             "message.tool", conv.id, {"run_id": run_id, **part}
+                        )
+                    elif (
+                        isinstance(event, PartStartEvent)
+                        and isinstance(event.part, NativeToolCallPart)
+                    ):
+                        # Provider-side tools (e.g. web_search) arrive as part
+                        # events, not FunctionToolCallEvent.
+                        part = {
+                            "type": "tool",
+                            "name": event.part.tool_name,
+                            "tool_call_id": event.part.tool_call_id or "",
+                            "status": "running",
+                        }
+                        tool_parts.append(part)
+                        await self._emit(
+                            "message.tool", conv.id, {"run_id": run_id, **part}
+                        )
+                    elif (
+                        isinstance(event, PartStartEvent)
+                        and isinstance(event.part, NativeToolReturnPart)
+                    ):
+                        for p in tool_parts:
+                            if p["tool_call_id"] == event.part.tool_call_id:
+                                p["status"] = "done"
+                        await self._emit(
+                            "message.tool",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "type": "tool",
+                                "name": event.part.tool_name,
+                                "tool_call_id": event.part.tool_call_id,
+                                "status": "done",
+                            },
                         )
                     elif isinstance(event, FunctionToolResultEvent):
                         status = (

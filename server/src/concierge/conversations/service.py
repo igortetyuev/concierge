@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.auth.models import User
+from concierge.channels.telegram.models import TelegramBinding
 from concierge.conversations.models import (
     Conversation,
     ConversationMember,
@@ -100,6 +101,38 @@ async def update_conversation(
     return conv
 
 
+async def _is_telegram_group(session: AsyncSession, conversation_id: int) -> bool:
+    bound = (
+        await session.execute(
+            select(TelegramBinding.conversation_id)
+            .where(
+                TelegramBinding.conversation_id == conversation_id,
+                TelegramBinding.kind.in_(("group", "topic")),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return bound is not None
+
+
+async def _sync_kind(
+    session: AsyncSession, conv: Conversation, member_count: int
+) -> None:
+    """Re-derive kind after a membership change: more than one member makes the
+    session a group, a single member makes it personal. A conversation bound to
+    a telegram group/topic stays "group" — unlinked chat participants still
+    write there."""
+    kind = (
+        "group"
+        if member_count > 1 or await _is_telegram_group(session, conv.id)
+        else "personal"
+    )
+    if kind == conv.kind:
+        return
+    conv.kind = kind
+    conv.reply_mode = "mention" if kind == "group" else "always"
+
+
 async def add_members(
     session: AsyncSession, conv: Conversation, user_ids: list[int]
 ) -> list[int] | None:
@@ -114,7 +147,10 @@ async def add_members(
         return None
     for uid in wanted:
         session.add(ConversationMember(conversation_id=conv.id, user_id=uid))
+    await _sync_kind(session, conv, len(existing_members) + len(wanted))
     await session.commit()
+    # _sync_kind UPDATEs the row and expires the onupdate-computed updated_at.
+    await session.refresh(conv)
     await session.refresh(conv, ["members"])
     return sorted(wanted)
 
@@ -126,7 +162,9 @@ async def remove_member(
     if member is None:
         return False
     await session.delete(member)
+    await _sync_kind(session, conv, len(conv.members) - 1)
     await session.commit()
+    await session.refresh(conv)
     await session.refresh(conv, ["members"])
     return True
 

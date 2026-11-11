@@ -94,6 +94,66 @@ async def _run_and_wait(conv_id: int, msg_id: int) -> Run:
         return run
 
 
+async def test_web_capability_permission_gate() -> None:
+    from concierge.agent import tools
+
+    allow_all = {"tools": {"allow": ["*"], "deny": []}}
+    assert "web_search" in tools.allowed_tool_names(allow_all)
+    assert "fetch_url" in tools.allowed_tool_names(allow_all)
+    assert len(tools.allowed_capabilities(allow_all)) == 1
+
+    denied = {"tools": {"allow": ["*"], "deny": ["web_search"]}}
+    assert "web_search" not in tools.allowed_tool_names(denied)
+    assert tools.allowed_capabilities(denied) == []
+    # A denied capability name must not leak into plain tools either.
+    assert "web_search" not in {
+        f.__name__ for f in tools.core_tools(denied)
+    }
+
+
+async def test_fetch_url_ssrf_guard() -> None:
+    from concierge.agent.tools import fetch_url
+
+    for url in (
+        "http://127.0.0.1:6333/",
+        "http://localhost/",
+        "http://192.168.99.66:11434/",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/",
+        "ftp://example.com/x",
+        "file:///etc/passwd",
+    ):
+        res = await fetch_url(url)
+        assert "error" in res, url
+
+
+async def test_fetch_url_html_and_redirect() -> None:
+    from concierge.agent import tools
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/redir":
+            return httpx.Response(302, headers={"location": "/page"})
+        if request.url.path == "/doc.pdf":
+            return httpx.Response(200, content=b"%PDF-1.4 fake")
+        return httpx.Response(
+            200,
+            text=(
+                "<html><body><article><h1>T</h1>"
+                "<p>Здравствуй, мир — текст тестовой страницы.</p>"
+                "</article></body></html>"
+            ),
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    ) as client:
+        # 93.184.216.34 is example.com — public IP, resolved without DNS.
+        res = await tools._fetch_url(client, "http://93.184.216.34/redir")
+        assert res["status"] == 200
+        assert res["url"].endswith("/page")
+        assert "Здравствуй" in res["text"]
+
+
 async def test_get_model_resolves_binding(engine) -> None:
     await _add_provider("chat")
     user = await make_user("u1", "adult")
@@ -278,10 +338,11 @@ async def test_mcp_stdio_server_called(
 async def test_reply_mode_mention(engine, client: httpx.AsyncClient) -> None:
     await _add_provider("chat", params={"custom_output_text": "ok"})
     await make_user("own", "adult")
+    member = await make_user("mem", "adult")
     token = await login(client, "own")
     resp = await client.post(
         "/conversations",
-        json={"kind": "group", "title": "g", "member_ids": []},
+        json={"kind": "group", "title": "g", "member_ids": [member.id]},
         headers=auth(token),
     )
     cid = int(resp.json()["id"])

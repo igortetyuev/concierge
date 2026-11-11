@@ -106,6 +106,41 @@ async def test_ws_fanout_message_created(
     await asyncio.to_thread(scenario)
 
 
+async def test_ws_fanout_conversation_created(
+    engine, client: httpx.AsyncClient
+) -> None:
+    alice = await make_user("alice", "adult")
+    bob = await make_user("bob", "adult")
+    token_a = await login(client, "alice")
+    token_b = await login(client, "bob")
+
+    def scenario() -> None:
+        with TestClient(create_app()) as tc, ExitStack() as stack:
+            # Members can't subscribe to a conversation that doesn't exist
+            # yet; the create fanout reaches them by user, not subscription.
+            ws_b = stack.enter_context(
+                tc.websocket_connect(f"/ws?token={token_b}")
+            )
+            assert ws_b.receive_json()["type"] == "hello"
+
+            resp = tc.post(
+                "/conversations",
+                json={"kind": "group", "title": "g", "member_ids": [bob.id]},
+                headers=auth(token_a),
+            )
+            assert resp.status_code == 201
+
+            ev = _wait_type(ws_b, "conversation.updated")
+            conv = ev["conversation"]
+            assert conv["id"] == resp.json()["id"]
+            assert {m["user_id"] for m in conv["members"]} == {
+                alice.id,
+                bob.id,
+            }
+
+    await asyncio.to_thread(scenario)
+
+
 async def test_ws_rejects_bad_token(engine, client: httpx.AsyncClient) -> None:
     def scenario() -> None:
         tc = TestClient(create_app())

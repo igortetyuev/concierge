@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { apiClient } from '../lib/api'
 import type { ConversationOut, MessageOut, UserRef } from '../lib/api'
+import * as ws from '../lib/ws'
 import { messageText } from './messages'
 import { $user } from './auth'
 
@@ -55,6 +56,7 @@ export function upsertConversation(conv: Partial<ConversationOut> & { id: number
   } else if (conv.title !== undefined && conv.members) {
     $conversations.set(byUpdatedAt([...list, conv as ConversationOut]))
     syncReadSeqs(conv as ConversationOut)
+    ws.subscribe([conv.id])
   }
 }
 

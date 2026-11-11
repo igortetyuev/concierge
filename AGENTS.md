@@ -40,7 +40,19 @@ curl -k https://box/healthz   # -> {"db":"ok","qdrant":"ok"}
 
 Ollama на `winhost` (192.168.99.66, Windows): `http://192.168.99.66:11434/v1`, модель
 `bge-m3` (1024-dim). Для capability `embedding` — provider kind `ollama` с этим base_url.
-Автозапуск — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env, firewall-правило «Ollama 11434».
+Автозапуск — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env, firewall-правило «Ollama 11434`.
+На box заведён провайдер `ollama-winhost` (kind `ollama`, тот же base_url); capability `vision`
+привязана к нему как `qwen3-vl:4b-instruct` (CPU-инференс ~10–20 с на картинку).
+
+## STT/TTS
+
+Speaches 0.8.3 на `winhost` (`C:\Users\user\speaches-venv`, cwd `C:\Users\user\speaches-home`,
+лог `speaches.log`): `http://192.168.99.66:8000/v1`, whisper `large-v3-turbo` на CPU
+(алиас `whisper-1`), Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
+firewall-правило «Speaches 8000». Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
+только с неиспользуемыми aiortc/gradio).
+TODO: привязать capability `stt` → provider `openai-compatible` base_url
+`http://192.168.99.66:8000/v1`, model `whisper-1` (и `tts` → model `tts-1`, после проверки голосов Kokoro).
 
 ## Админка и эксплуатация
 

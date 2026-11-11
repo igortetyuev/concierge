@@ -1,12 +1,18 @@
 import asyncio
+import ipaddress
 import logging
 import re
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from html import unescape
 from typing import Any, Literal
+from urllib.parse import urljoin, urlparse
 
+import httpx
+import trafilatura
 from pydantic_ai import Agent, RunContext
 
 from concierge.agent import providers
@@ -113,6 +119,126 @@ def message_text(parts: list[dict[str, Any]]) -> str:
     return "\n".join(
         str(p.get("text", "")) for p in parts if p.get("type") == "text"
     )
+
+
+FETCH_TEXT_MAX = 12000
+_FETCH_BODY_MAX = 4 * 1024 * 1024
+_FETCH_REDIRECTS = 5
+_FETCH_TIMEOUT = 20.0
+_DOC_MIMES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+async def _public_url_error(url: str) -> str | None:
+    """Return an error string unless `url` is http(s) on a public host."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "only http(s) URLs are allowed"
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, UnicodeError):
+        return "cannot resolve host"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(str(info[4][0]).split("%")[0])
+        except ValueError:
+            return "cannot resolve host"
+        if not ip.is_global:
+            return "host resolves to a non-public address"
+    return None
+
+
+def _html_to_text(html: str, url: str) -> str:
+    text = trafilatura.extract(
+        html, url=url, output_format="markdown", include_links=True
+    )
+    if text:
+        return text
+    plain = _TAG_RE.sub(" ", _SCRIPT_RE.sub(" ", html))
+    return re.sub(r"[ \t]+", " ", unescape(plain))
+
+
+async def _fetch_url(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
+    for _ in range(_FETCH_REDIRECTS + 1):
+        if err := await _public_url_error(url):
+            return {"error": err}
+        try:
+            async with client.stream(
+                "GET", url, follow_redirects=False
+            ) as resp:
+                if resp.is_redirect and (loc := resp.headers.get("location")):
+                    url = urljoin(str(resp.url), loc)
+                    continue
+                status = resp.status_code
+                final_url = str(resp.url)
+                ctype = (
+                    resp.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                body = bytearray()
+                truncated_body = False
+                async for chunk in resp.aiter_bytes(65536):
+                    body += chunk
+                    if len(body) > _FETCH_BODY_MAX:
+                        truncated_body = True
+                        break
+        except httpx.HTTPError as e:
+            return {"error": f"request failed: {e}"}
+        break
+    else:
+        return {"error": "too many redirects"}
+
+    if status >= 400:
+        return {"error": f"HTTP {status}", "url": final_url}
+    data = bytes(body)
+    if "html" in ctype or not ctype:
+        text = await asyncio.to_thread(
+            _html_to_text, data.decode("utf-8", "replace"), final_url
+        )
+    elif ctype.startswith("text/") or ctype in (
+        "application/json",
+        "application/xml",
+        "application/javascript",
+    ):
+        text = data.decode("utf-8", "replace")
+    elif ctype in _DOC_MIMES:
+        name = urlparse(final_url).path.rsplit("/", 1)[-1] or "file"
+        derived = await asyncio.to_thread(extract_document, ctype, name, data)
+        text = str(derived.get("text") or "")
+    else:
+        return {"error": f"unsupported content type {ctype!r}"}
+    return {
+        "url": final_url,
+        "status": status,
+        "content_type": ctype,
+        "text": text[:FETCH_TEXT_MAX],
+        "truncated": len(text) > FETCH_TEXT_MAX or truncated_body,
+    }
+
+
+async def fetch_url(url: str) -> dict[str, Any]:
+    """Fetch a web page (or document) by http(s) URL and return its text.
+
+    HTML is reduced to readable Markdown; pdf/docx/xlsx/pptx and plain text
+    are extracted directly. Use after web_search or for links from the user.
+    """
+    headers = {"User-Agent": "concierge-bot/1.0 (+family assistant)"}
+    async with httpx.AsyncClient(
+        timeout=_FETCH_TIMEOUT, headers=headers
+    ) as client:
+        return await _fetch_url(client, url)
 
 
 DOCUMENT_INSTRUCTIONS = (
@@ -262,14 +388,20 @@ CORE_TOOLS: dict[str, Callable[..., Any]] = {
         forget,
         create_document,
         delegate_coding_task,
+        fetch_url,
     )
 }
 
+# Names that gate pydantic-ai capabilities rather than plain function tools;
+# they share the tools.allow/deny lists in role permissions.
+CAPABILITY_TOOLS = ("web_search",)
+
 
 def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
-    """Core tool names visible to a role under permissions.tools allow/deny."""
+    """Tool/capability names visible to a role under permissions.tools."""
+    all_names = [*CORE_TOOLS, *CAPABILITY_TOOLS]
     if permissions.get("*"):
-        names = list(CORE_TOOLS)
+        names = list(all_names)
     else:
         conf = permissions.get("tools")
         if not isinstance(conf, dict):
@@ -280,7 +412,7 @@ def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
             return []
         names = [
             n
-            for n in CORE_TOOLS
+            for n in all_names
             if ("*" in allow or n in allow) and n not in deny
         ]
     if not has_permission(permissions, "code_agent"):
@@ -288,5 +420,20 @@ def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
     return names
 
 
+def allowed_capabilities(permissions: dict[str, Any]) -> list[Any]:
+    """Pydantic-ai capabilities (native/local web tools) for the role."""
+    from pydantic_ai.capabilities.web_search import WebSearch
+
+    names = set(allowed_tool_names(permissions))
+    caps: list[Any] = []
+    if "web_search" in names:
+        caps.append(WebSearch(native=True, local="duckduckgo"))
+    return caps
+
+
 def core_tools(permissions: dict[str, Any]) -> list[Callable[..., Any]]:
-    return [CORE_TOOLS[n] for n in allowed_tool_names(permissions)]
+    return [
+        CORE_TOOLS[n]
+        for n in allowed_tool_names(permissions)
+        if n in CORE_TOOLS
+    ]
