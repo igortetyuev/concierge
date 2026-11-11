@@ -1,6 +1,6 @@
 from typing import Any
 
-from sqlalchemy import String, cast, func, literal_column, select
+from sqlalchemy import String, cast, func, literal_column, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +10,10 @@ from concierge.conversations.models import (
     Conversation,
     ConversationMember,
     Message,
+    Run,
 )
 from concierge.core.db import utcnow
+from concierge.memory.models import MemoryItem
 
 
 async def create_conversation(
@@ -281,6 +283,22 @@ async def post_system_message(
 ) -> Message:
     """Append a system notice (e.g. STT failure) — not an agent reply."""
     return await post_assistant_message(session, conv, parts, None, "system")
+
+
+async def delete_message(session: AsyncSession, msg: Message) -> None:
+    """Delete a message row; clear FKs that point at it (runs, memory)."""
+    await session.execute(
+        update(Run)
+        .where(Run.trigger_message_id == msg.id)
+        .values(trigger_message_id=None)
+    )
+    await session.execute(
+        update(MemoryItem)
+        .where(MemoryItem.source_message_id == msg.id)
+        .values(source_message_id=None)
+    )
+    await session.delete(msg)
+    await session.commit()
 
 
 async def list_messages(

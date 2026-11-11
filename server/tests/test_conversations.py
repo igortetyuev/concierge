@@ -1,5 +1,9 @@
 import httpx
+from sqlalchemy import select
 
+from concierge.agent.runtime import get_runtime
+from concierge.conversations.models import Run
+from concierge.core import db
 from tests.conftest import auth, login, make_user
 
 
@@ -271,6 +275,92 @@ async def test_mark_read(engine, client: httpx.AsyncClient) -> None:
     by_user = {m["user_id"]: m for m in members.json()}
     assert by_user[bob.id]["last_read_seq"] == 1
     assert by_user[alice.id]["last_read_seq"] == 1
+
+
+async def test_delete_message(engine, client: httpx.AsyncClient) -> None:
+    await make_user("alice", "adult")
+    bob = await make_user("bob", "adult")
+    token_a = await login(client, "alice")
+    token_b = await login(client, "bob")
+    conv = await _create(client, token_a, kind="group", member_ids=[bob.id])
+
+    async def post(token: str, text: str) -> int:
+        resp = await client.post(
+            f"/conversations/{conv['id']}/messages",
+            json={"parts": [{"type": "text", "text": text}]},
+            headers=auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return int(resp.json()["id"])
+
+    msg_a = await post(token_a, "from alice")
+    # Each post schedules a background agent run; on the shared sqlite
+    # connection its session's ROLLBACK can discard the next request's
+    # uncommitted work — drain runs between DB-touching steps.
+    await get_runtime().wait_idle()
+    msg_b = await post(token_b, "from bob")
+    await get_runtime().wait_idle()
+
+    # A run referencing the message must not block its deletion.
+    async with db.get_sessionmaker()() as session:
+        session.add(
+            Run(
+                conversation_id=conv["id"],
+                trigger_message_id=msg_a,
+                status="done",
+            )
+        )
+        await session.commit()
+
+    # A member cannot delete somebody else's message.
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}/messages/{msg_a}",
+            headers=auth(token_b),
+        )
+    ).status_code == 403
+
+    # A non-member gets 404.
+    await make_user("mallory", "adult")
+    token_m = await login(client, "mallory")
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}/messages/{msg_a}",
+            headers=auth(token_m),
+        )
+    ).status_code == 404
+
+    # The author deletes their own message.
+    resp = await client.delete(
+        f"/conversations/{conv['id']}/messages/{msg_b}", headers=auth(token_b)
+    )
+    assert resp.status_code == 200
+
+    # The owner may delete any message; the run trigger link is cleared.
+    resp = await client.delete(
+        f"/conversations/{conv['id']}/messages/{msg_a}", headers=auth(token_a)
+    )
+    assert resp.status_code == 200
+    async with db.get_sessionmaker()() as session:
+        run = (
+            await session.execute(
+                select(Run).where(Run.conversation_id == conv["id"])
+            )
+        ).scalar_one()
+        assert run.trigger_message_id is None
+
+    msgs = await client.get(
+        f"/conversations/{conv['id']}/messages", headers=auth(token_a)
+    )
+    assert msgs.json() == []
+
+    # Deleting a missing message is a 404.
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}/messages/{msg_a}",
+            headers=auth(token_a),
+        )
+    ).status_code == 404
 
 
 async def test_search_finds_archived_conversation(

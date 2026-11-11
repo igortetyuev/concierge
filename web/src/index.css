@@ -706,6 +706,10 @@ a {
   cursor: pointer;
 }
 
+.msg-del {
+  display: none;
+}
+
 @media (hover: hover) {
   .copy-btn {
     opacity: 0;
@@ -715,6 +719,62 @@ a {
   .msg:focus-within .copy-btn {
     opacity: 1;
   }
+
+  .msg-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: none;
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .msg:hover .msg-del,
+  .msg:focus-within .msg-del {
+    opacity: 1;
+  }
+
+  .msg-del:hover {
+    color: var(--danger);
+    background: var(--accent-soft);
+  }
+}
+
+.swipe {
+  position: relative;
+  touch-action: pan-y;
+  overflow: hidden;
+}
+
+.swipe-inner {
+  transition: transform 0.18s ease;
+}
+
+.swipe.dragging .swipe-inner {
+  transition: none;
+}
+
+.swipe-del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  background: var(--danger);
+  color: #fff;
+  cursor: pointer;
 }
 
 .stream-cursor {

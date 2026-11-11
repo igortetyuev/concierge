@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { MouseEvent, PointerEvent, ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useStore } from '@nanostores/react'
 
@@ -23,6 +24,7 @@ import {
   $pending,
   $streams,
   $ttsAutoplay,
+  deleteMessage,
   discardPending,
   loadInitial,
   loadOlder,
@@ -41,6 +43,134 @@ const EMPTY_PENDING: PendingMessage[] = []
 const EMPTY_STREAMS: Record<number, StreamState> = {}
 const EMPTY_IDS: number[] = []
 const EMPTY_READ: Record<number, number> = {}
+
+const SWIPE_OPEN_W = 72
+const SWIPE_COMMIT = 140
+
+/**
+ * Swipe-left-to-delete wrapper for touch pointers. A short swipe opens the
+ * delete action; a long one commits it. Vertical scrolling is left to the
+ * browser (`touch-action: pan-y`), mouse pointers are ignored — hover UI
+ * covers them.
+ */
+function SwipeRow({
+  enabled,
+  onDelete,
+  children,
+}: {
+  enabled: boolean
+  onDelete: () => void
+  children: ReactNode
+}) {
+  const [dx, setDx] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const [open, setOpen] = useState(false)
+  const gesture = useRef<{ x: number; y: number; horiz: boolean } | null>(null)
+  const suppressClick = useRef(false)
+
+  if (!enabled) return <>{children}</>
+
+  function close(): void {
+    setDx(0)
+    setOpen(false)
+  }
+
+  function onPointerDown(e: PointerEvent<HTMLDivElement>): void {
+    if (e.pointerType !== 'touch') return
+    gesture.current = { x: e.clientX, y: e.clientY, horiz: false }
+  }
+
+  function onPointerMove(e: PointerEvent<HTMLDivElement>): void {
+    const g = gesture.current
+    if (!g) return
+    const mx = e.clientX - g.x
+    const my = e.clientY - g.y
+    if (!g.horiz) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return
+      if (Math.abs(my) >= Math.abs(mx)) {
+        gesture.current = null // vertical — the scroller takes over
+        return
+      }
+      g.horiz = true
+      setDragging(true)
+    }
+    const base = open ? -SWIPE_OPEN_W : 0
+    setDx(Math.min(0, Math.max(-SWIPE_COMMIT - 32, base + mx)))
+  }
+
+  function onPointerUp(): void {
+    const g = gesture.current
+    gesture.current = null
+    if (!g?.horiz) return
+    setDragging(false)
+    suppressClick.current = true
+    if (dx <= -SWIPE_COMMIT) {
+      close()
+      onDelete()
+    } else if (dx <= -SWIPE_OPEN_W / 2) {
+      setDx(-SWIPE_OPEN_W)
+      setOpen(true)
+    } else {
+      close()
+    }
+  }
+
+  function onPointerCancel(): void {
+    const wasHoriz = gesture.current?.horiz
+    gesture.current = null
+    setDragging(false)
+    if (wasHoriz) {
+      suppressClick.current = true
+      setDx(open ? -SWIPE_OPEN_W : 0)
+    }
+  }
+
+  function onClickCapture(e: MouseEvent<HTMLDivElement>): void {
+    const onDel = (e.target as HTMLElement).closest('.swipe-del') != null
+    if (suppressClick.current) {
+      suppressClick.current = false
+      if (!onDel) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      return
+    }
+    if (open && !onDel) {
+      e.preventDefault()
+      e.stopPropagation()
+      close()
+    }
+  }
+
+  return (
+    <div
+      className={`swipe${dragging ? ' dragging' : ''}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onClickCapture={onClickCapture}
+    >
+      <button
+        className="swipe-del"
+        style={{ opacity: dx < 0 ? 1 : 0 }}
+        tabIndex={-1}
+        aria-hidden={dx >= 0}
+        aria-label="Удалить сообщение"
+        onClick={(e) => {
+          e.stopPropagation()
+          close()
+          onDelete()
+        }}
+      >
+        <IconTrash />
+      </button>
+      <div className="swipe-inner" style={{ transform: `translateX(${dx}px)` }}>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 export default function ChatView({ convId }: { convId: number }) {
   const me = useStore($user)
@@ -116,6 +246,15 @@ export default function ChatView({ convId }: { convId: number }) {
     return others.length > 0 && others.every((x) => (readSeqs[x.user_id] ?? 0) >= m.seq)
   }
 
+  async function onDeleteMessage(m: MessageOut): Promise<void> {
+    if (!window.confirm('Удалить сообщение?')) return
+    try {
+      await deleteMessage(convId, m.id)
+    } catch {
+      window.alert('Не удалось удалить сообщение')
+    }
+  }
+
   const typing = typingUsers(convId).filter((id) => id !== me?.id)
   const onlineOthers = online.filter((id) => id !== me?.id)
   const streamList = Object.values(streams).sort((a, b) => a.runId - b.runId)
@@ -172,55 +311,73 @@ export default function ChatView({ convId }: { convId: number }) {
             !prev ||
             !isSameDay(new Date(m.created_at ?? 0), new Date(prev.created_at ?? 0))
           const own = m.author_id != null && m.author_id === me?.id
+          const canDel = own || canManage
+          const delBtn = canDel && (
+            <button
+              className="msg-del"
+              onClick={() => void onDeleteMessage(m)}
+              title="Удалить"
+              aria-label="Удалить сообщение"
+            >
+              <IconTrash size={15} />
+            </button>
+          )
           if (m.author_kind === 'system') {
             return (
               <div key={m.id}>
                 {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
-                <div className="msg sys">
-                  <span className="sys-note muted">
-                    <MessageParts
-                      parts={m.parts}
-                      convId={convId}
-                      origin={conv?.origin}
-                      mentions={mentionNames}
-                    />
-                  </span>
-                </div>
+                <SwipeRow enabled={canDel} onDelete={() => void onDeleteMessage(m)}>
+                  <div className="msg sys">
+                    <span className="sys-note muted">
+                      <MessageParts
+                        parts={m.parts}
+                        convId={convId}
+                        origin={conv?.origin}
+                        mentions={mentionNames}
+                      />
+                    </span>
+                    {delBtn}
+                  </div>
+                </SwipeRow>
               </div>
             )
           }
           return (
             <div key={m.id}>
               {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
-              <div className={`msg${own ? ' own' : ''}${m.author_kind === 'assistant' ? ' bot' : ''}`}>
-                {!own && conv?.kind === 'group' && (
-                  <span className="avatar small">{initials(authorName(m.author_id))}</span>
-                )}
-                <div className="bubble">
+              <SwipeRow enabled={canDel} onDelete={() => void onDeleteMessage(m)}>
+                <div className={`msg${own ? ' own' : ''}${m.author_kind === 'assistant' ? ' bot' : ''}`}>
                   {!own && conv?.kind === 'group' && (
-                    <div className="msg-author">{authorName(m.author_id)}</div>
+                    <span className="avatar small">{initials(authorName(m.author_id))}</span>
                   )}
-                  <MessageParts
-                    parts={m.parts}
-                    convId={convId}
-                    origin={conv?.origin}
-                    autoplayTts={m.id === ttsAutoplayId}
-                    mentions={mentionNames}
-                  />
-                  <span className="msg-meta">
-                    {fmtTime(m.created_at)}
-                    {m.author_kind === 'assistant' && (
-                      <CopyButton
-                        text={m.parts
-                          .filter((p) => p.type === 'text')
-                          .map((p) => String(p.text ?? ''))
-                          .join('\n\n')}
-                      />
+                  {own && delBtn}
+                  <div className="bubble">
+                    {!own && conv?.kind === 'group' && (
+                      <div className="msg-author">{authorName(m.author_id)}</div>
                     )}
-                    {own && <span className="ticks">{readByAll(m) ? '✓✓' : '✓'}</span>}
-                  </span>
+                    <MessageParts
+                      parts={m.parts}
+                      convId={convId}
+                      origin={conv?.origin}
+                      autoplayTts={m.id === ttsAutoplayId}
+                      mentions={mentionNames}
+                    />
+                    <span className="msg-meta">
+                      {fmtTime(m.created_at)}
+                      {m.author_kind === 'assistant' && (
+                        <CopyButton
+                          text={m.parts
+                            .filter((p) => p.type === 'text')
+                            .map((p) => String(p.text ?? ''))
+                            .join('\n\n')}
+                        />
+                      )}
+                      {own && <span className="ticks">{readByAll(m) ? '✓✓' : '✓'}</span>}
+                    </span>
+                  </div>
+                  {!own && delBtn}
                 </div>
-              </div>
+              </SwipeRow>
             </div>
           )
         })}

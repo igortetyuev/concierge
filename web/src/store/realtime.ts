@@ -8,6 +8,7 @@ import {
   markRead,
   noteTyping,
   refreshConversation,
+  refreshPreview,
   setOnline,
   setPresence,
   setReadSeq,
@@ -17,6 +18,7 @@ import {
   $messages,
   applyDelta,
   applyMessageCreated,
+  applyMessageDeleted,
   applyRunStatus,
   applyTool,
   resyncTail,
@@ -92,6 +94,12 @@ function handleEvent(ev: ws.WsEvent): void {
       if (convId != null && convId === $activeId.get()) markLatestRead(convId)
       break
     }
+    case 'message.deleted':
+      if (convId != null) {
+        applyMessageDeleted(convId, Number(ev.message_id))
+        void refreshPreview(convId)
+      }
+      break
     case 'message.delta':
       if (convId != null) applyDelta(convId, ev.run_id as number, String(ev.text ?? ''))
       break

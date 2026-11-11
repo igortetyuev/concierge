@@ -43,16 +43,31 @@ function mergeSorted(list: MessageOut[], incoming: MessageOut[]): MessageOut[] {
   return [...byId.values()].sort((a, b) => a.seq - b.seq || a.id - b.id)
 }
 
+/**
+ * Merge the freshly fetched tail over the loaded list: rows inside the tail
+ * window are authoritative (drops messages deleted elsewhere), rows outside
+ * (older pages, post-snapshot arrivals) are kept.
+ */
+function mergeTail(loaded: MessageOut[], tail: MessageOut[]): MessageOut[] {
+  if (!tail.length) return loaded
+  const lo = tail[0].seq
+  const hi = tail[tail.length - 1].seq
+  return mergeSorted(
+    tail,
+    loaded.filter((m) => m.seq < lo || m.seq > hi),
+  )
+}
+
 export async function loadInitial(conversationId: number): Promise<void> {
   const rows = await apiClient.listMessages(conversationId, undefined, 50)
-  patch($messages, conversationId, mergeSorted($messages.get()[conversationId] ?? [], rows))
+  patch($messages, conversationId, mergeTail($messages.get()[conversationId] ?? [], rows))
   patch($hasMore, conversationId, rows.length >= 50)
 }
 
 /** Re-fetch the tail after a reconnect; keeps older loaded pages. */
 export async function resyncTail(conversationId: number): Promise<void> {
   const rows = await apiClient.listMessages(conversationId, undefined, 50)
-  patch($messages, conversationId, mergeSorted($messages.get()[conversationId] ?? [], rows))
+  patch($messages, conversationId, mergeTail($messages.get()[conversationId] ?? [], rows))
 }
 
 export async function loadOlder(conversationId: number): Promise<void> {
@@ -90,6 +105,21 @@ export function applyMessageCreated(message: MessageOut): void {
     delete streams[message.run_id]
     patch($streams, convId, streams)
   }
+}
+
+export function applyMessageDeleted(conversationId: number, messageId: number): void {
+  const list = $messages.get()[conversationId]
+  if (!list?.some((m) => m.id === messageId)) return
+  patch(
+    $messages,
+    conversationId,
+    list.filter((m) => m.id !== messageId),
+  )
+}
+
+export async function deleteMessage(conversationId: number, messageId: number): Promise<void> {
+  await apiClient.deleteMessage(conversationId, messageId)
+  applyMessageDeleted(conversationId, messageId)
 }
 
 export async function sendMessage(conversationId: number, text: string): Promise<void> {

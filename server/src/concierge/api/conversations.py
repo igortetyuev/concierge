@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -8,6 +9,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
 )
@@ -23,10 +25,15 @@ from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
 from concierge.conversations import service
 from concierge.conversations.models import Conversation, ConversationMember, Message
+from concierge.core import audit
+from concierge.core.ratelimit import client_ip
 from concierge.media import service as media_service
 from concierge.media.models import Attachment
 from concierge.memory import indexer as memory_indexer
+from concierge.memory import store as memory_store
 from concierge.settings import service as settings_service
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -358,6 +365,42 @@ async def list_messages(
     conv = await _member_conv_or_404(session, conversation_id, user)
     rows = await service.list_messages(session, conv.id, before_seq, limit)
     return await _messages_out(session, rows)
+
+
+@router.delete("/conversations/{conversation_id}/messages/{message_id}")
+async def delete_message(
+    conversation_id: int,
+    message_id: int,
+    request: Request,
+    user: CurrentUser,
+    session: SessionDep,
+) -> dict[str, bool]:
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    msg = await session.get(Message, message_id)
+    if msg is None or msg.conversation_id != conv.id:
+        raise HTTPException(404, "message not found")
+    if msg.author_id != user.id and not _can_manage(conv, user):
+        raise HTTPException(403, "cannot delete this message")
+    audit.record(
+        session,
+        "message.delete",
+        actor_id=user.id,
+        actor_name=user.username,
+        target=f"conversation:{conv.id}",
+        detail={"message_id": msg.id, "seq": msg.seq},
+        ip=client_ip(request),
+    )
+    await service.delete_message(session, msg)
+    await get_hub().publish(
+        ChannelEvent("message.deleted", conv.id, {"message_id": message_id})
+    )
+    try:
+        await memory_store.delete_message_points(
+            memory_store.get_qdrant(), [message_id]
+        )
+    except Exception:
+        log.exception("message %s vector not deleted", message_id)
+    return {"ok": True}
 
 
 VOICE_QUICK_MIN_CHARS_DEFAULT = 2

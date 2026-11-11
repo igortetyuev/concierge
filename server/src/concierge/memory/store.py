@@ -140,6 +140,22 @@ async def upsert_messages(
     await client.upsert(messages_collection(slug), points=points)
 
 
+async def delete_message_points(
+    client: AsyncQdrantClient, message_ids: list[int]
+) -> None:
+    """Drop indexed message vectors from every messages collection.
+
+    The embedder slug may have changed since indexing, so sweep all
+    concierge_messages__* collections rather than guessing one.
+    """
+    ids: list[int | str | uuid.UUID] = list(message_ids)
+    for c in (await client.get_collections()).collections:
+        if c.name.startswith(MESSAGES_PREFIX):
+            await client.delete(
+                c.name, points_selector=qm.PointIdsList(points=ids)
+            )
+
+
 async def search_messages(
     client: AsyncQdrantClient,
     slug: str,

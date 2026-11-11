@@ -84,21 +84,19 @@ export async function loadConversations(): Promise<ConversationOut[]> {
 
 /** Latest message per conversation → list preview + unread baseline. */
 async function loadPreviews(convs: ConversationOut[]): Promise<void> {
-  await Promise.all(
-    convs.map(async (c) => {
-      try {
-        const rows = await apiClient.listMessages(c.id, undefined, 1)
-        const last = rows[rows.length - 1]
-        if (!last) return
-        patchRecord($maxSeq, c.id, last.seq)
-        const text = messageText(last.parts)
-        if (text) patchRecord($previews, c.id, text.slice(0, 120))
-        recomputeUnread(c.id)
-      } catch {
-        /* preview is best-effort */
-      }
-    }),
-  )
+  await Promise.all(convs.map((c) => refreshPreview(c.id)))
+}
+
+export async function refreshPreview(convId: number): Promise<void> {
+  try {
+    const rows = await apiClient.listMessages(convId, undefined, 1)
+    const last = rows[rows.length - 1]
+    patchRecord($maxSeq, convId, last?.seq ?? 0)
+    patchRecord($previews, convId, last ? messageText(last.parts).slice(0, 120) : '')
+    recomputeUnread(convId)
+  } catch {
+    /* preview is best-effort */
+  }
 }
 
 export async function refreshConversation(id: number): Promise<void> {

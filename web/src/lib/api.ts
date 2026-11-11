@@ -416,6 +416,10 @@ export const apiClient = {
       parts,
       client_msg_id: clientMsgId,
     }),
+  deleteMessage: (id: number, messageId: number) =>
+    api<{ ok: boolean }>(`/conversations/${id}/messages/${messageId}`, {
+      method: 'DELETE',
+    }),
   markRead: (id: number, seq: number) =>
     post<{ last_read_seq: number }>(`/conversations/${id}/read`, { seq }),
 
