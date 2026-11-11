@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete
 
@@ -18,7 +18,14 @@ from concierge.channels.telegram.service import (
     LINK_CODE_TTL_SECONDS,
     hash_link_code,
 )
+from concierge.core import audit
 from concierge.core.db import utcnow
+from concierge.core.ratelimit import (
+    LINK_CODE_LIMIT,
+    LINK_CODE_WINDOW,
+    client_ip,
+    get_limiter,
+)
 from concierge.settings import service as settings_service
 
 router = APIRouter(prefix="/telegram")
@@ -36,6 +43,10 @@ class LinkCodeOut(BaseModel):
 async def create_link_code(
     user: TelegramUser, session: SessionDep
 ) -> LinkCodeOut:
+    if not get_limiter().allow(
+        f"link_code:{user.id}", LINK_CODE_LIMIT, LINK_CODE_WINDOW
+    ):
+        raise HTTPException(429, "too many link codes, try later")
     await session.execute(
         delete(TelegramLinkCode).where(TelegramLinkCode.user_id == user.id)
     )
@@ -81,9 +92,18 @@ async def get_link(user: TelegramUser, session: SessionDep) -> LinkOut:
 
 
 @router.delete("/link")
-async def delete_link(user: TelegramUser, session: SessionDep) -> dict[str, bool]:
+async def delete_link(
+    user: TelegramUser, request: Request, session: SessionDep
+) -> dict[str, bool]:
     if await session.get(TelegramLink, user.id) is None:
         raise HTTPException(404, "not linked")
+    audit.record(
+        session,
+        "telegram.unlink",
+        actor_id=user.id,
+        actor_name=user.username,
+        ip=client_ip(request),
+    )
     dropped = await tg_service.unlink_user(session, user.id)
     for chat_id, thread_id in dropped:
         await tg_gateway.binding_dropped(chat_id, thread_id)

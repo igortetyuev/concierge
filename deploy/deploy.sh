@@ -21,14 +21,22 @@ rsync -az --delete \
 
 rsync -az --delete web/dist/ "$REMOTE:$DEST/web/"
 
-scp deploy/Caddyfile "$REMOTE:~/concierge-Caddyfile"
+rsync -az deploy/ "$REMOTE:$DEST/deploy/"
+
+scp deploy/Caddyfile deploy/concierge-backup.service deploy/concierge-backup.timer \
+    "$REMOTE:~/"
 
 ssh "$REMOTE" "cd $DEST/server && \
     \$HOME/.local/bin/uv sync --frozen --no-dev && \
     set -a && . /etc/concierge/.env && set +a && \
     .venv/bin/alembic upgrade head && \
-    sudo -n install -m 644 -b ~/concierge-Caddyfile /etc/caddy/Caddyfile && \
-    rm -f ~/concierge-Caddyfile && \
+    chmod +x $DEST/deploy/backup.sh $DEST/deploy/restore.sh && \
+    sudo -n install -m 644 -b ~/Caddyfile /etc/caddy/Caddyfile && \
+    sudo -n install -m 644 ~/concierge-backup.service /etc/systemd/system/ && \
+    sudo -n install -m 644 ~/concierge-backup.timer /etc/systemd/system/ && \
+    rm -f ~/Caddyfile ~/concierge-backup.service ~/concierge-backup.timer && \
+    sudo -n systemctl daemon-reload && \
+    sudo -n systemctl enable --now concierge-backup.timer && \
     sudo -n systemctl reload caddy && \
     sudo -n systemctl restart concierge.service && \
     systemctl is-active concierge.service"

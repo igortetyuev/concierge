@@ -8,8 +8,17 @@ from sqlalchemy import select
 from concierge.auth import security, service
 from concierge.auth.dependencies import CurrentUser, SessionDep, require
 from concierge.auth.models import Device, Invite, User
+from concierge.core import audit
 from concierge.core.config import get_settings
 from concierge.core.db import utcnow
+from concierge.core.ratelimit import (
+    LOGIN_FAIL_LIMIT,
+    LOGIN_FAIL_WINDOW,
+    LOGIN_IP_LIMIT,
+    LOGIN_IP_WINDOW,
+    client_ip,
+    get_limiter,
+)
 
 router = APIRouter()
 
@@ -66,10 +75,30 @@ class LoginBody(BaseModel):
 
 
 @router.post("/auth/login")
-async def login(body: LoginBody, response: Response, session: SessionDep) -> TokenOut:
+async def login(
+    body: LoginBody, request: Request, response: Response, session: SessionDep
+) -> TokenOut:
+    limiter = get_limiter()
+    ip = client_ip(request)
+    if not limiter.allow(f"login_ip:{ip}", LOGIN_IP_LIMIT, LOGIN_IP_WINDOW):
+        raise HTTPException(429, "too many login attempts, try later")
+    fail_key = f"login:{ip}:{body.username}"
+    if not limiter.check(fail_key, LOGIN_FAIL_LIMIT, LOGIN_FAIL_WINDOW):
+        raise HTTPException(429, "too many failed logins, try later")
     user = await service.authenticate(session, body.username, body.password)
     if user is None:
+        limiter.allow(fail_key, LOGIN_FAIL_LIMIT, LOGIN_FAIL_WINDOW)
+        audit.record(session, "auth.login.fail", target=body.username, ip=ip)
+        await session.commit()
         raise HTTPException(401, "invalid credentials")
+    limiter.reset(fail_key)
+    audit.record(
+        session,
+        "auth.login",
+        actor_id=user.id,
+        actor_name=user.username,
+        ip=ip,
+    )
     _device, refresh_token = await service.create_device(
         session, user, body.device_name
     )
@@ -180,6 +209,7 @@ class RegisterBody(BaseModel):
 @router.post("/auth/register")
 async def register(
     body: RegisterBody,
+    request: Request,
     response: Response,
     session: SessionDep,
     token: Annotated[str, Query()],
@@ -192,6 +222,14 @@ async def register(
     _device, refresh_token = await service.create_device(
         session, user, body.device_name
     )
+    audit.record(
+        session,
+        "auth.register",
+        actor_id=user.id,
+        actor_name=user.username,
+        ip=client_ip(request),
+    )
+    await session.commit()
     _set_refresh_cookie(response, refresh_token)
     return _token_out(user)
 

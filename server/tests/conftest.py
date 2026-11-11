@@ -20,7 +20,7 @@ os.environ.setdefault(
 from concierge.api.app import create_app
 from concierge.auth.models import Role, User
 from concierge.auth.security import hash_password
-from concierge.core import db, models  # noqa: F401  (registers all tables)
+from concierge.core import db, models, ratelimit  # noqa: F401  (registers all tables)
 from concierge.core.config import get_settings
 from concierge.core.db import Base
 from concierge.settings import service as settings_service
@@ -68,6 +68,7 @@ ROLE_SEEDS = {
 @pytest.fixture
 async def engine() -> AsyncIterator[AsyncEngine]:
     get_settings.cache_clear()
+    ratelimit.get_limiter().clear()
     eng = create_async_engine(
         "sqlite+aiosqlite://",
         poolclass=StaticPool,

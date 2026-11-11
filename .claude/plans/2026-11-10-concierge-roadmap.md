@@ -7,14 +7,14 @@ Python-сервер (FastAPI + PydanticAI + PostgreSQL + Qdrant на box) с р�
 id: concierge-roadmap
 title: Семейный агент-консьерж — дорожная карта (планы 0–11)
 planned: 2026-11-10
-status: in_progress
+status: done
 depends_on: []
 conflicts_with: []
 touches:
   - "**"            # greenfield: репозиторий ~/projects/concierge пуст
-claimed_by: null    # план 10 done 2026-11-11; статусы планов — в их секциях ниже
+claimed_by: null    # статусы планов — в их секциях ниже
 claimed_at: null
-finished_at: null   # umbrella: done когда будут done планы 0–11
+finished_at: 2026-11-11   # планы 0–11 done
 blocked_reason: null
 ---
 ```
@@ -228,6 +228,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
    **Verify:** задача из чата → CLI на Mac выполняется, лог стримится, результат в чате; смена на `claude` без рестарта.
 
 ### План 11 — Админ-панель, эксплуатация, безопасность (финал)
+
+**Status: done — devin-desktop/main, claimed_at: 2026-11-11, finished_at: 2026-11-11.**
 
 1. PWA-разделы администратора (адаптивные, на телефоне — списки/формы в одну колонку): пользователи/роли/права, редактор промпта с предпросмотром, провайдеры и bindings, MCP, code-agents, Telegram, журнал runs/затрат.
 2. Эксплуатация: `pg_dump` + rsync blobs по cron, снапшоты Qdrant, ротация логов, `/metrics`.

@@ -33,7 +33,7 @@ from concierge.conversations.models import (
     ConversationMember,
     Message,
 )
-from concierge.core import db
+from concierge.core import db, ratelimit
 from concierge.core.db import utcnow
 from concierge.media.models import Attachment
 from concierge.settings import service as settings_service
@@ -225,6 +225,42 @@ async def test_pairing_and_rate_limit(
     await tg.service.handle_message(_im(tg_user_id=777, message_id=4))
     await tg.service.handle_message(_im(tg_user_id=777, message_id=5))
     assert len(tg.outbox.sent_texts()) == sends_before
+
+
+async def test_pairing_brute_force_limit(engine, client, tg) -> None:
+    await make_user("pb", "adult")
+    token = await login(client, "pb")
+    code = (await client.post("/telegram/link-code", headers=auth(token))).json()[
+        "code"
+    ]
+
+    # TG_PAIR_LIMIT bad codes, then even a valid code is refused.
+    for i in range(ratelimit.TG_PAIR_LIMIT):
+        await tg.service.handle_message(
+            _im(
+                text=f"/start bad{i}",
+                command="start",
+                command_arg=f"bad{i}",
+                tg_user_id=999,
+                message_id=100 + i,
+            )
+        )
+    await tg.service.handle_message(
+        _im(
+            text=f"/start {code}",
+            command="start",
+            command_arg=code,
+            tg_user_id=999,
+            message_id=200,
+        )
+    )
+    async with db.get_sessionmaker()() as session:
+        link = (
+            await session.execute(
+                select(TelegramLink).where(TelegramLink.telegram_user_id == 999)
+            )
+        ).scalar_one_or_none()
+        assert link is None
 
 
 async def test_dm_text_run_and_dedup(

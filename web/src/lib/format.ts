@@ -31,6 +31,16 @@ export function fmtListDate(iso: string | null): string {
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
 }
 
+export function fmtDateTime(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function fmtBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return ''
   if (n < 1024) return `${n} Б`

@@ -108,8 +108,77 @@ export interface AdminUserOut {
   id: number
   username: string
   display_name: string
+  role_id: number
   role: string
   is_active: boolean
+  prompt_fragment: string | null
+}
+
+export interface RoleOut {
+  id: number
+  name: string
+  permissions: Record<string, unknown>
+  prompt_fragment: string | null
+}
+
+export interface ProviderOut {
+  id: number
+  name: string
+  kind: string
+  base_url: string | null
+  api_key_ref: string | null
+  enabled: boolean
+}
+
+export interface BindingOut {
+  id: number
+  capability: string
+  provider_id: number
+  model: string
+  params: Record<string, unknown>
+  role_id: number | null
+}
+
+export interface McpServerOut {
+  id: number
+  name: string
+  transport: string
+  command: string | null
+  url: string | null
+  env_ref: string | null
+  enabled: boolean
+  allowed_tools: string[]
+}
+
+export interface RunOut {
+  id: number
+  conversation_id: number
+  conversation_title: string
+  status: string
+  model: string | null
+  usage: Record<string, unknown>
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface AuditEventOut {
+  id: number
+  at: string
+  actor_id: number | null
+  actor_name: string
+  action: string
+  target: string
+  detail: Record<string, unknown>
+  ip: string
+}
+
+export interface InviteOut {
+  id: number
+  token?: string
+  role_id: number
+  expires_at: string
+  used_by: number | null
 }
 
 export interface TelegramBindingOut {
@@ -265,6 +334,14 @@ function post<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+function patchFn<T>(path: string, body: unknown): Promise<T> {
+  return api<T>(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export function deviceName(): string {
   const ua = navigator.userAgent
   const os = /iphone|ipad/i.test(ua)
@@ -385,6 +462,102 @@ export const apiClient = {
   adminTelegramOverview: () =>
     api<TelegramOverviewOut>('/admin/telegram/overview'),
   listAdminUsers: () => api<AdminUserOut[]>('/admin/users'),
+  createAdminUser: (body: {
+    username: string
+    display_name: string
+    password: string
+    role_id: number
+    prompt_fragment?: string
+  }) => post<AdminUserOut>('/admin/users', body),
+  patchAdminUser: (
+    id: number,
+    patch: Partial<{
+      display_name: string
+      password: string
+      role_id: number
+      is_active: boolean
+      prompt_fragment: string | null
+    }>,
+  ) => patchFn<AdminUserOut>(`/admin/users/${id}`, patch),
+  deleteAdminUser: (id: number) =>
+    api<{ ok: boolean }>(`/admin/users/${id}`, { method: 'DELETE' }),
+
+  listRoles: () => api<RoleOut[]>('/admin/roles'),
+  createRole: (body: {
+    name: string
+    permissions: Record<string, unknown>
+    prompt_fragment?: string
+  }) => post<RoleOut>('/admin/roles', body),
+  patchRole: (
+    id: number,
+    patch: Partial<{
+      name: string
+      permissions: Record<string, unknown>
+      prompt_fragment: string | null
+    }>,
+  ) => patchFn<RoleOut>(`/admin/roles/${id}`, patch),
+  deleteRole: (id: number) =>
+    api<{ ok: boolean }>(`/admin/roles/${id}`, { method: 'DELETE' }),
+
+  listProviders: () => api<ProviderOut[]>('/admin/providers'),
+  createProvider: (body: {
+    name: string
+    kind: string
+    base_url?: string
+    api_key_ref?: string
+    enabled?: boolean
+  }) => post<ProviderOut>('/admin/providers', body),
+  patchProvider: (id: number, patch: Partial<ProviderOut>) =>
+    patchFn<ProviderOut>(`/admin/providers/${id}`, patch),
+  deleteProvider: (id: number) =>
+    api<{ ok: boolean }>(`/admin/providers/${id}`, { method: 'DELETE' }),
+
+  listBindings: () => api<BindingOut[]>('/admin/capability-bindings'),
+  createBinding: (body: {
+    capability: string
+    provider_id: number
+    model: string
+    params?: Record<string, unknown>
+    role_id?: number | null
+  }) => post<BindingOut>('/admin/capability-bindings', body),
+  patchBinding: (id: number, patch: Partial<BindingOut>) =>
+    patchFn<BindingOut>(`/admin/capability-bindings/${id}`, patch),
+  deleteBinding: (id: number) =>
+    api<{ ok: boolean }>(`/admin/capability-bindings/${id}`, {
+      method: 'DELETE',
+    }),
+
+  listMcpServers: () => api<McpServerOut[]>('/admin/mcp-servers'),
+  createMcpServer: (body: {
+    name: string
+    transport: string
+    command?: string
+    url?: string
+    env_ref?: string
+    enabled?: boolean
+    allowed_tools?: string[]
+  }) => post<McpServerOut>('/admin/mcp-servers', body),
+  patchMcpServer: (id: number, patch: Partial<McpServerOut>) =>
+    patchFn<McpServerOut>(`/admin/mcp-servers/${id}`, patch),
+  deleteMcpServer: (id: number) =>
+    api<{ ok: boolean }>(`/admin/mcp-servers/${id}`, { method: 'DELETE' }),
+
+  listRuns: (limit = 50, offset = 0) =>
+    api<{ total: number; runs: RunOut[] }>(
+      `/admin/runs?limit=${limit}&offset=${offset}`,
+    ),
+  promptPreview: (userId: number, conversationId?: number) =>
+    api<{ prompt: string }>(
+      `/admin/prompt-preview?user_id=${userId}${conversationId ? `&conversation_id=${conversationId}` : ''}`,
+    ),
+  listAudit: (limit = 100, offset = 0) =>
+    api<{ total: number; events: AuditEventOut[] }>(
+      `/admin/audit-log?limit=${limit}&offset=${offset}`,
+    ),
+
+  listInvites: () => api<InviteOut[]>('/invites'),
+  createInvite: (roleId: number) =>
+    post<InviteOut>('/invites', { role_id: roleId }),
 
   listCodeAgents: () => api<CodeAgentOut[]>('/admin/code-agents'),
   createCodeAgent: (body: {

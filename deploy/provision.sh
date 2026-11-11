@@ -9,7 +9,8 @@ cd "$(dirname "$0")"
 
 # Copy unit + Caddyfile to a staging dir, then install with sudo.
 ssh "$REMOTE" 'mkdir -p ~/concierge-provision'
-scp concierge.service Caddyfile "$REMOTE:~/concierge-provision/"
+scp concierge.service concierge-backup.service concierge-backup.timer Caddyfile \
+    "$REMOTE:~/concierge-provision/"
 
 ssh "$REMOTE" 'bash -s' <<'REMOTE'
 set -euo pipefail
@@ -54,12 +55,23 @@ fi
 sudo -n chown appuser:appuser /etc/concierge/.env
 sudo -n chmod 600 /etc/concierge/.env
 
+# journald: cap log volume (log rotation for concierge + system).
+sudo -n mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=200M\nMaxRetentionSec=1month\n' \
+    | sudo -n tee /etc/systemd/journald.conf.d/concierge.conf >/dev/null
+sudo -n systemctl restart systemd-journald
+
 # systemd unit + Caddy.
 sudo -n install -m 644 ~/concierge-provision/concierge.service \
     /etc/systemd/system/concierge.service
+sudo -n install -m 644 ~/concierge-provision/concierge-backup.service \
+    /etc/systemd/system/concierge-backup.service
+sudo -n install -m 644 ~/concierge-provision/concierge-backup.timer \
+    /etc/systemd/system/concierge-backup.timer
 sudo -n install -m 644 -b ~/concierge-provision/Caddyfile /etc/caddy/Caddyfile
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable --now caddy
+sudo -n systemctl enable --now concierge-backup.timer
 rm -rf ~/concierge-provision
 REMOTE
 

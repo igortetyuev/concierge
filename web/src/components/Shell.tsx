@@ -7,9 +7,10 @@ import ConversationList from './ConversationList'
 import DetailsPanel from './DetailsPanel'
 import MemoryView from './MemoryView'
 import SettingsView from './SettingsView'
+import AdminView from './admin/AdminView'
 import { IconChat } from './icons'
 
-export default function Shell({ view }: { view?: 'memory' | 'settings' }) {
+export default function Shell({ view }: { view?: 'memory' | 'settings' | 'admin' }) {
   const { id } = useParams()
   const convId = id ? Number(id) : null
   const detailsOpen = useStore($detailsOpen)
@@ -29,6 +30,8 @@ export default function Shell({ view }: { view?: 'memory' | 'settings' }) {
           <MemoryView />
         ) : view === 'settings' ? (
           <SettingsView />
+        ) : view === 'admin' ? (
+          <AdminView />
         ) : (
           <div className="chat-empty-state muted">
             <IconChat size={40} />

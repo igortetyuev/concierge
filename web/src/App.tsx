@@ -34,6 +34,7 @@ export default function App() {
       <Route path="/c/:id" element={<Shell />} />
       <Route path="/memory" element={<Shell view="memory" />} />
       <Route path="/settings" element={<Shell view="settings" />} />
+      <Route path="/admin" element={<Shell view="admin" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

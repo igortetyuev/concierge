@@ -1,9 +1,10 @@
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 
+from concierge.agent import prompt as agent_prompt
 from concierge.agent.models import (
     CapabilityBinding,
     CodeAgent,
@@ -16,7 +17,14 @@ from concierge.auth.models import Role, User
 from concierge.channels.telegram import gateway as tg_gateway
 from concierge.channels.telegram import service as tg_service
 from concierge.channels.telegram.models import TelegramBinding, TelegramLink
-from concierge.conversations.models import Conversation
+from concierge.conversations.models import (
+    Conversation,
+    ConversationMember,
+    Run,
+)
+from concierge.core import audit
+from concierge.core.audit import AuditEvent
+from concierge.core.ratelimit import client_ip
 from concierge.settings import service as settings_service
 
 router = APIRouter(prefix="/admin")
@@ -76,7 +84,7 @@ async def list_users(_: ManageUsers, session: SessionDep) -> list[UserOut]:
 
 @router.post("/users", status_code=201)
 async def create_user(
-    body: UserIn, _: ManageUsers, session: SessionDep
+    body: UserIn, request: Request, admin: ManageUsers, session: SessionDep
 ) -> UserOut:
     if await session.get(Role, body.role_id) is None:
         raise HTTPException(404, "role not found")
@@ -93,6 +101,14 @@ async def create_user(
         prompt_fragment=body.prompt_fragment,
     )
     session.add(user)
+    audit.record(
+        session,
+        "admin.user.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=user.username,
+        ip=client_ip(request),
+    )
     await session.commit()
     await session.refresh(user, attribute_names=["role"])
     return UserOut.of(user)
@@ -100,7 +116,11 @@ async def create_user(
 
 @router.patch("/users/{user_id}")
 async def patch_user(
-    user_id: int, body: UserPatch, _: ManageUsers, session: SessionDep
+    user_id: int,
+    body: UserPatch,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
 ) -> UserOut:
     user = await session.get(User, user_id)
     if user is None:
@@ -112,6 +132,15 @@ async def patch_user(
         user.password_hash = security.hash_password(data.pop("password"))
     for key, value in data.items():
         setattr(user, key, value)
+    audit.record(
+        session,
+        "admin.user.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=user.username,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     await session.refresh(user, attribute_names=["role"])
     return UserOut.of(user)
@@ -119,13 +148,21 @@ async def patch_user(
 
 @router.delete("/users/{user_id}")
 async def delete_user(
-    user_id: int, admin: ManageUsers, session: SessionDep
+    user_id: int, request: Request, admin: ManageUsers, session: SessionDep
 ) -> dict[str, bool]:
     if user_id == admin.id:
         raise HTTPException(400, "cannot delete yourself")
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(404, "user not found")
+    audit.record(
+        session,
+        "admin.user.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=user.username,
+        ip=client_ip(request),
+    )
     await session.delete(user)
     await session.commit()
     return {"ok": True}
@@ -170,7 +207,7 @@ async def list_roles(_: ManageUsers, session: SessionDep) -> list[RoleOut]:
 
 @router.post("/roles", status_code=201)
 async def create_role(
-    body: RoleIn, _: ManageUsers, session: SessionDep
+    body: RoleIn, request: Request, admin: ManageUsers, session: SessionDep
 ) -> RoleOut:
     exists = (
         await session.execute(select(Role).where(Role.name == body.name))
@@ -183,26 +220,48 @@ async def create_role(
         prompt_fragment=body.prompt_fragment,
     )
     session.add(role)
+    audit.record(
+        session,
+        "admin.role.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=role.name,
+        ip=client_ip(request),
+    )
     await session.commit()
     return RoleOut.of(role)
 
 
 @router.patch("/roles/{role_id}")
 async def patch_role(
-    role_id: int, body: RolePatch, _: ManageUsers, session: SessionDep
+    role_id: int,
+    body: RolePatch,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
 ) -> RoleOut:
     role = await session.get(Role, role_id)
     if role is None:
         raise HTTPException(404, "role not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
         setattr(role, key, value)
+    audit.record(
+        session,
+        "admin.role.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=role.name,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return RoleOut.of(role)
 
 
 @router.delete("/roles/{role_id}")
 async def delete_role(
-    role_id: int, _: ManageUsers, session: SessionDep
+    role_id: int, request: Request, admin: ManageUsers, session: SessionDep
 ) -> dict[str, bool]:
     role = await session.get(Role, role_id)
     if role is None:
@@ -214,6 +273,14 @@ async def delete_role(
     ).scalar_one()
     if users:
         raise HTTPException(409, "role has users")
+    audit.record(
+        session,
+        "admin.role.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=role.name,
+        ip=client_ip(request),
+    )
     await session.delete(role)
     await session.commit()
     return {"ok": True}
@@ -270,10 +337,18 @@ async def list_providers(
 
 @router.post("/providers", status_code=201)
 async def create_provider(
-    body: ProviderIn, _: ManageProviders, session: SessionDep
+    body: ProviderIn, request: Request, admin: ManageProviders, session: SessionDep
 ) -> ProviderOut:
     provider = ModelProvider(**body.model_dump())
     session.add(provider)
+    audit.record(
+        session,
+        "admin.provider.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=provider.name,
+        ip=client_ip(request),
+    )
     await session.commit()
     return ProviderOut.of(provider)
 
@@ -282,21 +357,32 @@ async def create_provider(
 async def patch_provider(
     provider_id: int,
     body: ProviderPatch,
-    _: ManageProviders,
+    request: Request,
+    admin: ManageProviders,
     session: SessionDep,
 ) -> ProviderOut:
     provider = await session.get(ModelProvider, provider_id)
     if provider is None:
         raise HTTPException(404, "provider not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
         setattr(provider, key, value)
+    audit.record(
+        session,
+        "admin.provider.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=provider.name,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ProviderOut.of(provider)
 
 
 @router.delete("/providers/{provider_id}")
 async def delete_provider(
-    provider_id: int, _: ManageProviders, session: SessionDep
+    provider_id: int, request: Request, admin: ManageProviders, session: SessionDep
 ) -> dict[str, bool]:
     provider = await session.get(ModelProvider, provider_id)
     if provider is None:
@@ -305,6 +391,14 @@ async def delete_provider(
         delete(CapabilityBinding).where(
             CapabilityBinding.provider_id == provider_id
         )
+    )
+    audit.record(
+        session,
+        "admin.provider.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=provider.name,
+        ip=client_ip(request),
     )
     await session.delete(provider)
     await session.commit()
@@ -364,7 +458,7 @@ async def list_bindings(
 
 @router.post("/capability-bindings", status_code=201)
 async def create_binding(
-    body: BindingIn, _: ManageProviders, session: SessionDep
+    body: BindingIn, request: Request, admin: ManageProviders, session: SessionDep
 ) -> BindingOut:
     if await session.get(ModelProvider, body.provider_id) is None:
         raise HTTPException(404, "provider not found")
@@ -372,6 +466,15 @@ async def create_binding(
         raise HTTPException(404, "role not found")
     binding = CapabilityBinding(**body.model_dump())
     session.add(binding)
+    audit.record(
+        session,
+        "admin.binding.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=binding.capability,
+        detail={"model": binding.model, "role_id": binding.role_id},
+        ip=client_ip(request),
+    )
     await session.commit()
     return BindingOut.of(binding)
 
@@ -380,25 +483,44 @@ async def create_binding(
 async def patch_binding(
     binding_id: int,
     body: BindingPatch,
-    _: ManageProviders,
+    request: Request,
+    admin: ManageProviders,
     session: SessionDep,
 ) -> BindingOut:
     binding = await session.get(CapabilityBinding, binding_id)
     if binding is None:
         raise HTTPException(404, "binding not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
         setattr(binding, key, value)
+    audit.record(
+        session,
+        "admin.binding.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=binding.capability,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return BindingOut.of(binding)
 
 
 @router.delete("/capability-bindings/{binding_id}")
 async def delete_binding(
-    binding_id: int, _: ManageProviders, session: SessionDep
+    binding_id: int, request: Request, admin: ManageProviders, session: SessionDep
 ) -> dict[str, bool]:
     binding = await session.get(CapabilityBinding, binding_id)
     if binding is None:
         raise HTTPException(404, "binding not found")
+    audit.record(
+        session,
+        "admin.binding.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=binding.capability,
+        ip=client_ip(request),
+    )
     await session.delete(binding)
     await session.commit()
     return {"ok": True}
@@ -461,34 +583,60 @@ async def list_mcp(_: ManageMcp, session: SessionDep) -> list[McpOut]:
 
 @router.post("/mcp-servers", status_code=201)
 async def create_mcp(
-    body: McpIn, _: ManageMcp, session: SessionDep
+    body: McpIn, request: Request, admin: ManageMcp, session: SessionDep
 ) -> McpOut:
     server = McpServer(**body.model_dump())
     session.add(server)
+    audit.record(
+        session,
+        "admin.mcp.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=server.name,
+        ip=client_ip(request),
+    )
     await session.commit()
     return McpOut.of(server)
 
 
 @router.patch("/mcp-servers/{server_id}")
 async def patch_mcp(
-    server_id: int, body: McpPatch, _: ManageMcp, session: SessionDep
+    server_id: int, body: McpPatch, request: Request, admin: ManageMcp, session: SessionDep
 ) -> McpOut:
     server = await session.get(McpServer, server_id)
     if server is None:
         raise HTTPException(404, "mcp server not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
         setattr(server, key, value)
+    audit.record(
+        session,
+        "admin.mcp.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=server.name,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return McpOut.of(server)
 
 
 @router.delete("/mcp-servers/{server_id}")
 async def delete_mcp(
-    server_id: int, _: ManageMcp, session: SessionDep
+    server_id: int, request: Request, admin: ManageMcp, session: SessionDep
 ) -> dict[str, bool]:
     server = await session.get(McpServer, server_id)
     if server is None:
         raise HTTPException(404, "mcp server not found")
+    audit.record(
+        session,
+        "admin.mcp.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=server.name,
+        ip=client_ip(request),
+    )
     await session.delete(server)
     await session.commit()
     return {"ok": True}
@@ -545,7 +693,7 @@ async def list_code_agents(
 
 @router.post("/code-agents", status_code=201)
 async def create_code_agent(
-    body: CodeAgentIn, _: ManageCodeAgents, session: SessionDep
+    body: CodeAgentIn, request: Request, admin: ManageCodeAgents, session: SessionDep
 ) -> CodeAgentOut:
     agent = CodeAgent(**body.model_dump())
     session.add(agent)
@@ -556,18 +704,31 @@ async def create_code_agent(
             .where(CodeAgent.id != agent.id)
             .values(is_default=False)
         )
+    audit.record(
+        session,
+        "admin.code_agent.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=f"{agent.name}@{agent.ssh_host}",
+        ip=client_ip(request),
+    )
     await session.commit()
     return CodeAgentOut.of(agent)
 
 
 @router.patch("/code-agents/{agent_id}")
 async def patch_code_agent(
-    agent_id: int, body: CodeAgentPatch, _: ManageCodeAgents, session: SessionDep
+    agent_id: int,
+    body: CodeAgentPatch,
+    request: Request,
+    admin: ManageCodeAgents,
+    session: SessionDep,
 ) -> CodeAgentOut:
     agent = await session.get(CodeAgent, agent_id)
     if agent is None:
         raise HTTPException(404, "code agent not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
         setattr(agent, key, value)
     if agent.is_default:
         await session.execute(
@@ -575,17 +736,34 @@ async def patch_code_agent(
             .where(CodeAgent.id != agent.id)
             .values(is_default=False)
         )
+    audit.record(
+        session,
+        "admin.code_agent.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=f"{agent.name}@{agent.ssh_host}",
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return CodeAgentOut.of(agent)
 
 
 @router.delete("/code-agents/{agent_id}")
 async def delete_code_agent(
-    agent_id: int, _: ManageCodeAgents, session: SessionDep
+    agent_id: int, request: Request, admin: ManageCodeAgents, session: SessionDep
 ) -> dict[str, bool]:
     agent = await session.get(CodeAgent, agent_id)
     if agent is None:
         raise HTTPException(404, "code agent not found")
+    audit.record(
+        session,
+        "admin.code_agent.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=f"{agent.name}@{agent.ssh_host}",
+        ip=client_ip(request),
+    )
     await session.delete(agent)
     await session.commit()
     return {"ok": True}
@@ -633,7 +811,7 @@ async def list_telegram_links(
 
 @router.post("/telegram/links", status_code=201)
 async def create_telegram_link(
-    body: TelegramLinkIn, _: ManageUsers, session: SessionDep
+    body: TelegramLinkIn, request: Request, admin: ManageUsers, session: SessionDep
 ) -> TelegramLinkOut:
     user = await session.get(User, body.user_id)
     if user is None:
@@ -656,6 +834,15 @@ async def create_telegram_link(
         telegram_username=body.telegram_username,
     )
     session.add(link)
+    audit.record(
+        session,
+        "admin.telegram_link.create",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=user.username,
+        detail={"telegram_user_id": body.telegram_user_id},
+        ip=client_ip(request),
+    )
     await session.commit()
     return TelegramLinkOut(
         user_id=link.user_id,
@@ -668,10 +855,18 @@ async def create_telegram_link(
 
 @router.delete("/telegram/links/{user_id}")
 async def delete_telegram_link(
-    user_id: int, _: ManageUsers, session: SessionDep
+    user_id: int, request: Request, admin: ManageUsers, session: SessionDep
 ) -> dict[str, bool]:
     if await session.get(TelegramLink, user_id) is None:
         raise HTTPException(404, "link not found")
+    audit.record(
+        session,
+        "admin.telegram_link.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=str(user_id),
+        ip=client_ip(request),
+    )
     dropped = await tg_service.unlink_user(session, user_id)
     for chat_id, thread_id in dropped:
         await tg_gateway.binding_dropped(chat_id, thread_id)
@@ -735,5 +930,157 @@ async def telegram_overview(
                 title=title,
             )
             for b, title in rows
+        ],
+    )
+
+
+# ---------- runs journal ----------
+
+
+class RunOut(BaseModel):
+    id: int
+    conversation_id: int
+    conversation_title: str
+    status: str
+    model: str | None
+    usage: dict[str, Any]
+    started_at: Any
+    finished_at: Any
+    error: str | None
+
+
+class RunsPage(BaseModel):
+    total: int
+    runs: list[RunOut]
+
+
+@router.get("/runs")
+async def list_runs(
+    _: ManageUsers, session: SessionDep, limit: int = 50, offset: int = 0
+) -> RunsPage:
+    total = int(
+        (
+            await session.execute(select(func.count()).select_from(Run))
+        ).scalar_one()
+    )
+    rows = (
+        await session.execute(
+            select(Run, Conversation.title)
+            .join(Conversation, Conversation.id == Run.conversation_id)
+            .order_by(Run.id.desc())
+            .limit(min(limit, 200))
+            .offset(offset)
+        )
+    ).all()
+    return RunsPage(
+        total=total,
+        runs=[
+            RunOut(
+                id=r.id,
+                conversation_id=r.conversation_id,
+                conversation_title=title,
+                status=r.status,
+                model=r.model,
+                usage=r.usage,
+                started_at=r.started_at,
+                finished_at=r.finished_at,
+                error=r.error,
+            )
+            for r, title in rows
+        ],
+    )
+
+
+# ---------- prompt preview ----------
+
+
+@router.get("/prompt-preview")
+async def prompt_preview(
+    user_id: int,
+    _: ManageUsers,
+    session: SessionDep,
+    conversation_id: int | None = None,
+) -> dict[str, str]:
+    """Composed system prompt for a user (optionally inside a real session)."""
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "user not found")
+    if conversation_id is not None:
+        conv = await session.get(Conversation, conversation_id)
+        if conv is None:
+            raise HTTPException(404, "conversation not found")
+        member_ids = (
+            await session.execute(
+                select(ConversationMember.user_id).where(
+                    ConversationMember.conversation_id == conv.id
+                )
+            )
+        ).scalars().all()
+        names = (
+            (
+                await session.execute(
+                    select(User.display_name).where(User.id.in_(member_ids))
+                )
+            ).scalars().all()
+            if member_ids
+            else [user.display_name]
+        )
+    else:
+        conv = Conversation(kind="personal", title="", owner_id=user.id)
+        names = [user.display_name]
+    text = await agent_prompt.system_prompt(session, user, conv, list(names))
+    return {"prompt": text}
+
+
+# ---------- audit log ----------
+
+
+class AuditOut(BaseModel):
+    id: int
+    at: Any
+    actor_id: int | None
+    actor_name: str
+    action: str
+    target: str
+    detail: dict[str, Any]
+    ip: str
+
+
+class AuditPage(BaseModel):
+    total: int
+    events: list[AuditOut]
+
+
+@router.get("/audit-log")
+async def list_audit(
+    _: ManageUsers, session: SessionDep, limit: int = 100, offset: int = 0
+) -> AuditPage:
+    total = int(
+        (
+            await session.execute(select(func.count()).select_from(AuditEvent))
+        ).scalar_one()
+    )
+    rows = (
+        await session.execute(
+            select(AuditEvent)
+            .order_by(AuditEvent.id.desc())
+            .limit(min(limit, 500))
+            .offset(offset)
+        )
+    ).scalars()
+    return AuditPage(
+        total=total,
+        events=[
+            AuditOut(
+                id=e.id,
+                at=e.at,
+                actor_id=e.actor_id,
+                actor_name=e.actor_name,
+                action=e.action,
+                target=e.target,
+                detail=e.detail,
+                ip=e.ip,
+            )
+            for e in rows
         ],
     )

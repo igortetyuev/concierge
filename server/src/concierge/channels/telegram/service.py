@@ -27,6 +27,7 @@ from concierge.channels.telegram.models import (
 )
 from concierge.conversations import service as conversations
 from concierge.conversations.models import Conversation, ConversationMember
+from concierge.core import audit, ratelimit
 from concierge.core.db import get_sessionmaker, utcnow
 from concierge.media import service as media_service
 from concierge.media.pipeline import get_pipeline
@@ -302,10 +303,22 @@ class TelegramService:
     async def _try_link(
         self, session: AsyncSession, im: InboundMessage
     ) -> bool:
+        limiter = ratelimit.get_limiter()
+        pair_key = f"tg_pair:{im.tg_user_id}"
+        if not limiter.check(
+            pair_key, ratelimit.TG_PAIR_LIMIT, ratelimit.TG_PAIR_WINDOW
+        ):
+            log.warning(
+                "telegram pairing rate-limited: user %s", im.tg_user_id
+            )
+            return False
         row = await session.get(
             TelegramLinkCode, hash_link_code(im.command_arg)
         )
         if row is None or row.expires_at < utcnow():
+            limiter.allow(
+                pair_key, ratelimit.TG_PAIR_LIMIT, ratelimit.TG_PAIR_WINDOW
+            )
             return False
         user = await session.get(User, row.user_id)
         if user is None or not await self._allowed(
@@ -323,6 +336,15 @@ class TelegramService:
             )
         )
         await session.delete(row)
+        audit.record(
+            session,
+            "telegram.link",
+            actor_id=user.id,
+            actor_name=user.username,
+            target=str(im.tg_user_id),
+            detail={"telegram_username": im.tg_username},
+        )
+        limiter.reset(pair_key)
         await session.commit()
         await self._outbox.send(
             im.chat_id,

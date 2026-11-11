@@ -1,6 +1,14 @@
 box {
 	tls internal
 
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+		-Server
+	}
+
 	# API + WebSocket: /api/* -> app root (e.g. /api/auth/login -> /auth/login)
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:8000

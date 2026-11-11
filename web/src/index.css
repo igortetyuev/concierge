@@ -1515,3 +1515,69 @@ a {
   border-radius: 10px;
   background: var(--accent-soft);
 }
+
+/* ---------- admin ---------- */
+
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 16px 8px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-x: auto;
+}
+
+.admin-tabs button {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.admin-tabs button.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.admin-edit {
+  margin: 4px 0 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.admin-perms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+
+.settings-form textarea {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  resize: vertical;
+}
+
+.prompt-preview {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

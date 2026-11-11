@@ -19,12 +19,14 @@ from concierge.conversations.models import (
     Message,
     Run,
 )
+from concierge.core.audit import AuditEvent
 from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
 from concierge.settings.models import Setting, SettingScope
 
 __all__ = [
     "Attachment",
+    "AuditEvent",
     "CapabilityBinding",
     "CodeAgent",
     "Conversation",

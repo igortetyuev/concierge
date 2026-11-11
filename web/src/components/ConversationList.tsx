@@ -18,7 +18,7 @@ import {
 import { messageText } from '../store/messages'
 import NewGroupDialog from './NewGroupDialog'
 import VoiceQuick from './VoiceQuick'
-import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconSettings, IconUsers } from './icons'
+import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconSettings, IconTool, IconUsers } from './icons'
 
 export default function ConversationList() {
   const navigate = useNavigate()
@@ -59,6 +59,11 @@ export default function ConversationList() {
 
   const filtered = convs.filter((c) => (tab === 'archived' ? c.status === 'archived' : c.status === 'active'))
   const convById = new Map(convs.map((c) => [c.id, c]))
+  const isAdmin =
+    me?.permissions['*'] === true ||
+    ['manage_users', 'manage_providers', 'manage_mcp', 'manage_code_agents'].some(
+      (p) => me?.permissions[p] === true,
+    )
 
   return (
     <div className="convlist">
@@ -96,6 +101,16 @@ export default function ConversationList() {
         >
           <IconSettings />
         </Link>
+        {isAdmin && (
+          <Link
+            to="/admin"
+            className="icon-btn"
+            title="Администрирование"
+            aria-label="Администрирование"
+          >
+            <IconTool />
+          </Link>
+        )}
         <VoiceQuick />
       </header>
 
