@@ -85,6 +85,10 @@ export const IconCopy = svg(
   'M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',
   'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
 )
+export const IconDownload = svg(
+  'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4',
+  'M7 10l5 5 5-5M12 15V3',
+)
 export const IconFile = svg(
   'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z',
   'M14 2v6h6',

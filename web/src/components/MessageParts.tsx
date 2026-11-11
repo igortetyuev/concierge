@@ -6,6 +6,7 @@ import type { MessagePart } from '../lib/api'
 import { fmtBytes } from '../lib/format'
 import { $attachments, setAttachment } from '../store/attachments'
 import { $composerPrefill } from '../store/ui'
+import ImageLightbox from './ImageLightbox'
 import Markdown from './Markdown'
 import { IconCheck, IconClose, IconCopy, IconFile, IconTool } from './icons'
 
@@ -85,9 +86,10 @@ interface AttachmentPartProps {
   origin?: string
   hasText: boolean
   autoplay: boolean
+  onOpenImage?: (url: string) => void
 }
 
-function AttachmentPart({ part, convId, origin, hasText, autoplay }: AttachmentPartProps) {
+function AttachmentPart({ part, convId, origin, hasText, autoplay, onOpenImage }: AttachmentPartProps) {
   const id = Number(part.attachment_id)
   // The WS attachment.updated event carries fresher derived data than the
   // expanded part (which was serialized when the message was fetched).
@@ -162,7 +164,12 @@ function AttachmentPart({ part, convId, origin, hasText, autoplay }: AttachmentP
     <span className="attachment">
       {part.type === 'image' &&
         (url ? (
-          <img className="msg-image" src={url} alt={name} />
+          <img
+            className="msg-image"
+            src={url}
+            alt={name}
+            onClick={() => onOpenImage?.(url)}
+          />
         ) : (
           <span className="part-attachment muted">{failed ? name : 'загрузка…'}</span>
         ))}
@@ -249,6 +256,8 @@ export default function MessageParts({
   mentions,
 }: MessagePartsProps) {
   const hasText = parts.some((p) => p.type === 'text')
+  const imageParts = parts.filter((p) => p.type === 'image' && p.attachment_id != null)
+  const [viewer, setViewer] = useState<{ idx: number; url: string } | null>(null)
   return (
     <>
       {parts.map((p, i) => {
@@ -285,6 +294,7 @@ export default function MessageParts({
           return <ToolChip key={p.tool_call_id ?? i} name={String(p.name ?? 'tool')} status={p.status} />
         }
         if (p.attachment_id != null) {
+          const imgIdx = p.type === 'image' ? imageParts.indexOf(p) : -1
           return (
             <AttachmentPart
               key={String(p.attachment_id)}
@@ -293,6 +303,9 @@ export default function MessageParts({
               origin={origin}
               hasText={hasText}
               autoplay={autoplayTts && p.tts === true}
+              onOpenImage={
+                imgIdx >= 0 ? (url) => setViewer({ idx: imgIdx, url }) : undefined
+              }
             />
           )
         }
@@ -302,6 +315,17 @@ export default function MessageParts({
           </span>
         )
       })}
+      {viewer != null && (
+        <ImageLightbox
+          images={imageParts.map((p) => ({
+            id: Number(p.attachment_id),
+            name: String(p.name ?? 'image'),
+          }))}
+          initialIndex={viewer.idx}
+          initialUrl={viewer.url}
+          onClose={() => setViewer(null)}
+        />
+      )}
     </>
   )
 }
