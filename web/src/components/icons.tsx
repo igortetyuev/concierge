@@ -65,3 +65,19 @@ export const IconBook = svg(
   'M4 19.5A2.5 2.5 0 0 1 6.5 17H20',
   'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z',
 )
+export const IconPaperclip = svg(
+  'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
+)
+export const IconCamera = svg(
+  'M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z',
+  'M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+)
+export const IconMic = svg(
+  'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z',
+  'M19 10v2a7 7 0 0 1-14 0v-2M12 19v4',
+)
+export const IconStop = svg('M6 6h12v12H6z')
+export const IconFile = svg(
+  'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z',
+  'M14 2v6h6',
+)

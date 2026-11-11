@@ -174,6 +174,8 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
 
 ### План 6 — Мультимодальный ввод (STT, vision, видео, документы)
 
+**Status: done — 2026-11-10, devin-desktop/main, finished_at: 2026-11-10.**
+
 1. `POST /attachments` (multipart, лимит по роли, дедуп sha256), `GET /attachments/{id}` с проверкой членства.
 2. `MediaPipeline` (фон, результат в `attachments.derived` + событие WS): изображение → `vision`; аудио (webm/opus, ogg/opus из Telegram, m4a с iOS) → ffmpeg-нормализация → `stt` (Deepgram / OpenAI-совместимый whisper — настраивается); видео → аудиодорожка → `stt`, кадры → `vision`; документы → pymupdf/python-docx/openpyxl/python-pptx/текст.
 3. Публичный сервисный метод `transcribe(attachment_id) -> str` — используется планами 7 и 8.

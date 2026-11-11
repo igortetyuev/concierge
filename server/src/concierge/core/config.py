@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     invite_ttl_hours: int = 72
     cookie_secure: bool = False
 
+    # Content-addressed blob store for attachments (/srv/concierge/blobs on box).
+    blob_dir: str = "data/blobs"
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+
 
 @lru_cache
 def get_settings() -> Settings:

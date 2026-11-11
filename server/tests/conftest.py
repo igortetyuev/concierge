@@ -1,4 +1,5 @@
 import os
+import tempfile
 from collections.abc import AsyncIterator
 
 import httpx
@@ -10,6 +11,10 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("CONCIERGE_SECRET_KEY", Fernet.generate_key().decode())
 os.environ.setdefault(
     "CONCIERGE_JWT_SECRET", "test-jwt-secret-0123456789abcdef0123456789"
+)
+os.environ.setdefault(
+    "CONCIERGE_BLOB_DIR",
+    tempfile.mkdtemp(prefix="concierge-test-blobs-"),
 )
 
 from concierge.api.app import create_app

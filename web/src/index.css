@@ -701,6 +701,58 @@ a {
   color: var(--text-2);
 }
 
+.attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attachment .part-attachment.file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  border: none;
+  cursor: pointer;
+}
+
+.msg-image {
+  max-width: min(320px, 100%);
+  max-height: 320px;
+  border-radius: 10px;
+  display: block;
+}
+
+.msg-video {
+  max-width: min(320px, 100%);
+  max-height: 320px;
+  border-radius: 10px;
+  display: block;
+  background: #000;
+}
+
+.msg-audio {
+  width: min(300px, 62vw);
+  height: 36px;
+  display: block;
+}
+
+.part-caption {
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.part-transcript {
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+
+.part-note {
+  font-size: 0.75rem;
+}
+
 .jump-down {
   position: absolute;
   right: 16px;
@@ -717,13 +769,84 @@ a {
   z-index: 5;
 }
 
+.composer-wrap {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 0.8rem;
+}
+
+.attach-chip.error {
+  border-color: var(--danger);
+}
+
+.attach-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-err {
+  color: var(--danger);
+  font-size: 0.75rem;
+}
+
+.rec-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: rec-blink 1s infinite;
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.icon-btn.recording {
+  color: var(--danger);
+}
+
 .composer {
   display: flex;
   align-items: flex-end;
   gap: 8px;
   padding: 8px;
   padding-bottom: calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
   background: var(--surface);
 }
 

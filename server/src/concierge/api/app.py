@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from concierge.api.admin import router as admin_router
+from concierge.api.attachments import router as attachments_router
 from concierge.api.auth import router as auth_router
 from concierge.api.conversations import router as conversations_router
 from concierge.api.health import router as health_router
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)
     app.include_router(admin_router)
     app.include_router(conversations_router)
+    app.include_router(attachments_router)
     app.include_router(memory_router)
     app.include_router(ws_router)
     return app

@@ -57,6 +57,25 @@ export interface MessageOut {
   created_at: string | null
 }
 
+export interface AttachmentOut {
+  id: number
+  sha256: string
+  mime: string
+  size: number
+  name: string
+  kind: 'image' | 'audio' | 'video' | 'document' | 'other'
+  conversation_id: number | null
+  uploaded_by: number
+  status: string
+  transcript?: string
+  caption?: string
+  text?: string
+  duration_s?: number
+  pages?: number
+  error?: string
+  created_at: string | null
+}
+
 export interface MemoryItemOut {
   id: number
   scope: 'user' | 'family'
@@ -161,6 +180,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>
 }
 
+/** Download an attachment and return a revocable object URL. */
+export async function fetchAttachmentObjectUrl(id: number): Promise<string> {
+  await ensureFreshToken()
+  const headers = new Headers()
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  const resp = await fetch(`${BASE}/attachments/${id}`, { headers })
+  if (!resp.ok) throw new ApiError(resp.status, 'attachment fetch failed')
+  return URL.createObjectURL(await resp.blob())
+}
+
 function post<T>(path: string, body?: unknown): Promise<T> {
   return api<T>(path, {
     method: 'POST',
@@ -237,8 +266,20 @@ export const apiClient = {
       parts: [{ type: 'text', text }],
       client_msg_id: clientMsgId,
     }),
+  postMessageParts: (id: number, parts: MessagePart[], clientMsgId: string) =>
+    post<MessageOut>(`/conversations/${id}/messages`, {
+      parts,
+      client_msg_id: clientMsgId,
+    }),
   markRead: (id: number, seq: number) =>
     post<{ last_read_seq: number }>(`/conversations/${id}/read`, { seq }),
+
+  uploadAttachment: (file: File | Blob, name: string, conversationId?: number) => {
+    const form = new FormData()
+    form.append('file', file, name)
+    if (conversationId != null) form.append('conversation_id', String(conversationId))
+    return api<AttachmentOut>('/attachments', { method: 'POST', body: form })
+  },
   search: (q: string, limit = 20) =>
     api<MessageOut[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 

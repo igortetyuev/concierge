@@ -31,12 +31,16 @@ from concierge.conversations.models import (
     Run,
 )
 from concierge.core.db import get_sessionmaker, utcnow
+from concierge.media import service as media_service
+from concierge.media.models import Attachment
+from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.memory import service as memory_service
 
 log = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 100
+MEDIA_TEXT_MAX = 4000
 
 ERROR_TEXT = "Произошла ошибка при обработке запроса."
 
@@ -90,8 +94,21 @@ class AgentRuntime:
 
             member_names = await self._member_names(session, conv.id)
             bound = await providers.get_model(session, "chat", user)
+            # STT/vision for the trigger's attachments must land before the
+            # run reads them; history rows are resolved as they stand.
+            trigger_att = {
+                aid
+                for p in trigger.parts
+                if (aid := media_service.part_attachment_id(p)) is not None
+            }
+            if trigger_att:
+                await get_pipeline().wait_for(trigger_att)
+            history_rows = await conversations.list_messages(
+                session, conv.id, before_seq=trigger.seq, limit=HISTORY_LIMIT
+            )
+            atts = await self._attachments(session, [*history_rows, trigger])
             trigger_text = self._content(
-                trigger.parts, conv, member_names, user.id
+                trigger.parts, conv, member_names, user.id, atts
             )
             memory_block = await memory_service.retrieve_context(
                 session, user, conv, trigger_text
@@ -101,7 +118,9 @@ class AgentRuntime:
             )
             toolsets = await mcp.build_toolsets(session, user)
             funcs = tools.core_tools(user.role.permissions)
-            history = await self._history(session, conv, trigger, member_names)
+            history = self._build_history(
+                history_rows, conv, member_names, atts
+            )
             deps = ToolDeps(user_id=user.id, conversation_id=conv.id)
 
             run = Run(
@@ -211,19 +230,34 @@ class AgentRuntime:
         ).all()
         return {uid: name for uid, name in rows}
 
-    async def _history(
+    async def _attachments(
+        self, session: AsyncSession, messages: list[Message]
+    ) -> dict[int, Attachment]:
+        ids = {
+            aid
+            for m in messages
+            for p in m.parts
+            if (aid := media_service.part_attachment_id(p)) is not None
+        }
+        if not ids:
+            return {}
+        rows = (
+            await session.execute(
+                select(Attachment).where(Attachment.id.in_(ids))
+            )
+        ).scalars()
+        return {a.id: a for a in rows}
+
+    def _build_history(
         self,
-        session: AsyncSession,
+        rows: list[Message],
         conv: Conversation,
-        trigger: Message,
         member_names: dict[int, str],
+        atts: dict[int, Attachment],
     ) -> list[ModelMessage]:
-        rows = await conversations.list_messages(
-            session, conv.id, before_seq=trigger.seq, limit=HISTORY_LIMIT
-        )
         out: list[ModelMessage] = []
         for m in rows:
-            text = self._content(m.parts, conv, member_names, m.author_id)
+            text = self._content(m.parts, conv, member_names, m.author_id, atts)
             if not text:
                 continue
             if m.author_kind == "assistant":
@@ -238,13 +272,27 @@ class AgentRuntime:
         conv: Conversation,
         member_names: dict[int, str],
         author_id: int | None,
+        atts: dict[int, Attachment],
     ) -> str:
         chunks = []
         for p in parts:
             ptype = p.get("type")
             if ptype == "text":
                 chunks.append(str(p.get("text", "")))
-            elif ptype != "tool":
+            elif ptype == "tool":
+                continue
+            elif (aid := media_service.part_attachment_id(p)) is not None and (
+                att := atts.get(aid)
+            ) is not None:
+                label = att.original_name or ptype or "attachment"
+                text = media_service.media_prompt_text(att, str(ptype))
+                if ptype in ("audio", "video"):
+                    chunks.append(text or f"[{label}]")
+                elif text:
+                    chunks.append(f"[{label}]\n{text[:MEDIA_TEXT_MAX]}")
+                else:
+                    chunks.append(f"[{label}]")
+            else:
                 chunks.append(f"[{ptype or 'attachment'}]")
         text = "\n".join(c for c in chunks if c)
         if conv.kind == "group" and author_id is not None:

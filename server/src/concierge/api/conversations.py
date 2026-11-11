@@ -13,6 +13,8 @@ from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
 from concierge.conversations import service
 from concierge.conversations.models import Conversation, ConversationMember, Message
+from concierge.media import service as media_service
+from concierge.media.models import Attachment
 from concierge.memory import indexer as memory_indexer
 
 router = APIRouter()
@@ -119,6 +121,35 @@ def _can_manage(conv: Conversation, user: User) -> bool:
     return conv.owner_id == user.id or has_permission(
         user.role.permissions, "*"
     )
+
+
+async def _bind_attachments(
+    session: AsyncSession, parts: list[dict[str, Any]], conv_id: int, user: User
+) -> None:
+    """Adopt the uploader's unbound attachments referenced by a message."""
+    changed = False
+    for p in parts:
+        aid = media_service.part_attachment_id(p)
+        if aid is None:
+            continue
+        att = await session.get(Attachment, aid)
+        if att is not None and att.conversation_id is None and att.uploaded_by == user.id:
+            att.conversation_id = conv_id
+            changed = True
+    if changed:
+        await session.commit()
+
+
+async def _messages_out(
+    session: AsyncSession, rows: list[Message]
+) -> list[MessageOut]:
+    expanded = await media_service.expand_messages(session, rows)
+    out = []
+    for m in rows:
+        o = MessageOut.of(m)
+        o.parts = expanded[m.id]
+        out.append(o)
+    return out
 
 
 class CreateConversationBody(BaseModel):
@@ -273,7 +304,9 @@ async def post_message(
     msg, created = await service.post_message(
         session, conv, user, body.parts, body.client_msg_id
     )
-    out = MessageOut.of(msg)
+    if created:
+        await _bind_attachments(session, body.parts, conv.id, user)
+    out = (await _messages_out(session, [msg]))[0]
     if created:
         await get_hub().publish(
             ChannelEvent(
@@ -297,7 +330,7 @@ async def list_messages(
 ) -> list[MessageOut]:
     conv = await _member_conv_or_404(session, conversation_id, user)
     rows = await service.list_messages(session, conv.id, before_seq, limit)
-    return [MessageOut.of(m) for m in rows]
+    return await _messages_out(session, rows)
 
 
 class MarkReadBody(BaseModel):
@@ -335,4 +368,4 @@ async def search(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> list[MessageOut]:
     rows = await service.search_messages(session, user.id, q, limit)
-    return [MessageOut.of(m) for m in rows]
+    return await _messages_out(session, rows)

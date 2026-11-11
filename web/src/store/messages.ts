@@ -88,11 +88,20 @@ export function applyMessageCreated(message: MessageOut): void {
 export async function sendMessage(conversationId: number, text: string): Promise<void> {
   const trimmed = text.trim()
   if (!trimmed) return
+  await sendParts(conversationId, [{ type: 'text', text: trimmed }], trimmed)
+}
+
+export async function sendParts(
+  conversationId: number,
+  parts: MessagePart[],
+  previewText: string,
+): Promise<void> {
+  if (!parts.length) return
   const clientMsgId = crypto.randomUUID()
-  const entry: PendingMessage = { client_msg_id: clientMsgId, text: trimmed, failed: false }
+  const entry: PendingMessage = { client_msg_id: clientMsgId, text: previewText, failed: false }
   patch($pending, conversationId, [...($pending.get()[conversationId] ?? []), entry])
   try {
-    const msg = await apiClient.postMessage(conversationId, trimmed, clientMsgId)
+    const msg = await apiClient.postMessageParts(conversationId, parts, clientMsgId)
     applyMessageCreated(msg)
   } catch {
     patch(

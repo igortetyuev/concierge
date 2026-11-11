@@ -1,5 +1,6 @@
 import * as ws from '../lib/ws'
-import type { MessageOut } from '../lib/api'
+import type { AttachmentOut, MessageOut } from '../lib/api'
+import { setAttachment } from './attachments'
 import {
   $activeId,
   applyMessageToList,
@@ -116,6 +117,9 @@ function handleEvent(ev: ws.WsEvent): void {
       }
       break
     }
+    case 'attachment.updated':
+      setAttachment(ev.attachment as AttachmentOut)
+      break
     case 'read.updated':
       if (convId != null) {
         setReadSeq(convId, ev.user_id as number, ev.last_read_seq as number)
