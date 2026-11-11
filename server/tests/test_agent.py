@@ -114,6 +114,33 @@ async def test_get_model_role_override(engine) -> None:
     assert bound is not None
 
 
+async def test_deepseek_provider_kind(engine, monkeypatch) -> None:
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    async with db.get_sessionmaker()() as session:
+        provider = ModelProvider(
+            name="p-deepseek", kind="deepseek", api_key_ref="DEEPSEEK_API_KEY"
+        )
+        session.add(provider)
+        await session.flush()
+        session.add(
+            CapabilityBinding(
+                capability="chat",
+                provider_id=provider.id,
+                model="deepseek-flash",
+                params={},
+            )
+        )
+        await session.commit()
+    user = await make_user("ds", "adult")
+    async with db.get_sessionmaker()() as session:
+        bound = await get_model(session, "chat", user)
+    assert bound is not None
+    assert isinstance(bound.model, OpenAIChatModel)
+    assert bound.model.model_name == "deepseek-flash"
+
+
 async def test_no_binding_returns_none(engine) -> None:
     user = await make_user("u3", "adult")
     async with db.get_sessionmaker()() as session:
@@ -273,6 +300,73 @@ async def test_reply_mode_mention(engine, client: httpx.AsyncClient) -> None:
     msg_yes = await _post_and_collect(client, token, cid, "@консьерж привет")
     run = await _run_and_wait(cid, msg_yes["id"])
     assert run.status == "done"
+
+
+async def test_stream_deltas_include_first_chunk(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """The first text chunk arrives as PartStartEvent, not PartDeltaEvent —
+    it must reach message.delta too (else the reply starts one chunk late)."""
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.settings import ModelSettings
+
+    from concierge.agent import providers
+    from concierge.agent.providers import BoundModel
+    from concierge.channels import ChannelEvent, get_hub
+
+    async def scripted_stream(messages, agent_info):
+        yield "Па"
+        yield "риж"
+
+    real_get_model = providers.get_model
+
+    async def fake_get_model(session, capability, user):
+        if capability == "chat":
+            return BoundModel(
+                FunctionModel(stream_function=scripted_stream),
+                "test/scripted",
+                ModelSettings(),
+            )
+        return await real_get_model(session, capability, user)
+
+    monkeypatch.setattr(providers, "get_model", fake_get_model)
+
+    await make_user("streamy", "adult")
+    token = await login(client, "streamy")
+    cid = await _make_conv(client, token)
+
+    deltas: list[str] = []
+
+    class RecSink:
+        presence = False
+        user_id = 0
+
+        async def emit(self, event: ChannelEvent) -> None:
+            if event.type == "message.delta":
+                deltas.append(str(event.data.get("text", "")))
+
+    conn = get_hub().connect(RecSink())
+    await get_hub().subscribe(conn, cid)
+    try:
+        msg = await _post_and_collect(client, token, cid, "столица Франции")
+        await get_runtime().wait_idle()
+    finally:
+        await get_hub().disconnect(conn)
+
+    async with db.get_sessionmaker()() as session:
+        run = (
+            await session.execute(
+                select(Run).where(Run.trigger_message_id == msg["id"])
+            )
+        ).scalar_one()
+        reply = (
+            await session.execute(
+                select(Message).where(Message.run_id == run.id)
+            )
+        ).scalar_one()
+    final = "".join(str(p["text"]) for p in reply.parts if p["type"] == "text")
+    assert final == "Париж"
+    assert "".join(deltas) == final
 
 
 async def test_e2e_stream_over_ws(engine, client: httpx.AsyncClient) -> None:

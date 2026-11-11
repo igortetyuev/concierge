@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     PartDeltaEvent,
+    PartStartEvent,
     RetryPromptPart,
     TextPart,
     TextPartDelta,
@@ -136,6 +137,7 @@ class AgentRuntime:
             session.add(run)
             await session.commit()
             run_id = run.id
+            deps.run_id = run_id
             await self._run_status(conv.id, run_id, "running", model=run.model)
 
         if bound is None:
@@ -162,18 +164,27 @@ class AgentRuntime:
                 deps=deps,
             ) as stream:
                 async for event in stream:
-                    if isinstance(event, PartDeltaEvent) and isinstance(
-                        event.delta, TextPartDelta
+                    # First chunk of a text part arrives as PartStartEvent,
+                    # subsequent chunks as PartDeltaEvent(TextPartDelta).
+                    if (
+                        isinstance(event, PartDeltaEvent)
+                        and isinstance(event.delta, TextPartDelta)
                     ):
+                        delta_text = event.delta.content_delta
+                    elif (
+                        isinstance(event, PartStartEvent)
+                        and isinstance(event.part, TextPart)
+                    ):
+                        delta_text = event.part.content
+                    else:
+                        delta_text = ""
+                    if delta_text:
                         await self._emit(
                             "message.delta",
                             conv.id,
-                            {
-                                "run_id": run_id,
-                                "text": event.delta.content_delta,
-                            },
+                            {"run_id": run_id, "text": delta_text},
                         )
-                    elif isinstance(event, FunctionToolCallEvent):
+                    if isinstance(event, FunctionToolCallEvent):
                         part = {
                             "type": "tool",
                             "name": event.part.tool_name,

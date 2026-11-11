@@ -12,7 +12,7 @@ depends_on: []
 conflicts_with: []
 touches:
   - "**"            # greenfield: репозиторий ~/projects/concierge пуст
-claimed_by: null    # план 9 done 2026-11-11; статусы планов — в их секциях ниже
+claimed_by: null    # план 10 done 2026-11-11; статусы планов — в их секциях ниже
 claimed_at: null
 finished_at: null   # umbrella: done когда будут done планы 0–11
 blocked_reason: null
@@ -217,6 +217,9 @@ Blob-хранилище: /srv/concierge/blobs/<sha256> (вложения, сге
    **Verify:** «список покупок в xlsx» → валидный файл; тесты обратного чтения форматов.
 
 ### План 10 — Делегирование кода CLI-агенту (devin → claude → pi)
+
+**Status: done — devin-desktop/main, claimed_at: 2026-11-11, finished_at: 2026-11-11.**
+Отклонения: Devin через `devin -p` вместо `devin acp` (acp требует отдельный API key; `-p` без стрима — прогресс heartbeat'ом), pi — `--mode json`; ClaudeBackend отложен по решению пользователя, «смена без рестарта» проверена переключением devin → pi. Живой Verify: задача из PWA-чата выполнена devin, затем pi на Mac, результат в чате.
 
 1. `CodeAgentBackend` (Protocol): `start/stream_events/cancel`; `DevinBackend`, `ClaudeBackend` (`claude -p --output-format stream-json`), `PiBackend`; флаги headless-режима devin/pi проверить в начале плана.
 2. Транспорт `asyncssh` к Mac; allowlist рабочих каталогов.

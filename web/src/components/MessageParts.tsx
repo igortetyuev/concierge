@@ -7,16 +7,74 @@ import { fmtBytes } from '../lib/format'
 import { $attachments, setAttachment } from '../store/attachments'
 import { $composerPrefill } from '../store/ui'
 import Markdown from './Markdown'
-import { IconCheck, IconClose, IconFile, IconTool } from './icons'
+import { IconCheck, IconClose, IconCopy, IconFile, IconTool } from './icons'
 
-export function ToolChip({ name, status }: { name: string; status?: string }) {
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard) throw new Error('no clipboard api')
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      /* nothing */
+    }
+    ta.remove()
+    return ok
+  }
+}
+
+export function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function onCopy() {
+    if (!(await copyText(text))) return
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <button
+      className="copy-btn"
+      onClick={() => void onCopy()}
+      aria-label="Копировать"
+      title="Копировать"
+    >
+      {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+    </button>
+  )
+}
+
+export function ToolChip({
+  name,
+  status,
+  progress,
+}: {
+  name: string
+  status?: string
+  progress?: string
+}) {
+  const running = status === 'running' || !status
   return (
     <span className={`tool-chip status-${status ?? 'running'}`}>
       <IconTool size={13} />
       <span className="tool-name">{name}</span>
+      {running && progress ? (
+        <span className="tool-progress" title={progress}>
+          {progress}
+        </span>
+      ) : null}
       {status === 'done' && <IconCheck size={13} />}
       {status === 'error' && <IconClose size={13} />}
-      {(status === 'running' || !status) && <span className="spinner" />}
+      {running && <span className="spinner" />}
     </span>
   )
 }

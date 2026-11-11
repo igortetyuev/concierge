@@ -111,6 +111,11 @@ def _build_model(
         from pydantic_ai.providers.google import GoogleProvider
 
         return GoogleModel(model_name, provider=GoogleProvider(**kwargs))
+    if kind == "deepseek":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+        return OpenAIChatModel(model_name, provider=DeepSeekProvider(api_key=api_key))
     if kind == "mistral":
         from pydantic_ai.models.mistral import MistralModel
         from pydantic_ai.providers.mistral import MistralProvider

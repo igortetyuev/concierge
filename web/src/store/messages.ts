@@ -13,6 +13,7 @@ export interface ToolState {
   name: string
   tool_call_id: string
   status: string
+  progress?: string
 }
 
 export interface StreamState {
@@ -184,7 +185,12 @@ export function applyTool(conversationId: number, runId: number, part: MessagePa
   const tools = s.tools.some((t) => t.tool_call_id === toolId)
     ? s.tools.map((t) =>
         t.tool_call_id === toolId
-          ? { ...t, status: String(part.status ?? t.status) }
+          ? {
+              ...t,
+              status: String(part.status ?? t.status),
+              progress:
+                part.progress != null ? String(part.progress) : t.progress,
+            }
           : t,
       )
     : [
@@ -193,6 +199,8 @@ export function applyTool(conversationId: number, runId: number, part: MessagePa
           name: String(part.name ?? 'tool'),
           tool_call_id: toolId,
           status: String(part.status ?? 'running'),
+          progress:
+            part.progress != null ? String(part.progress) : undefined,
         },
       ]
   putStream(conversationId, { ...s, tools })

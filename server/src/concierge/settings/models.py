@@ -27,7 +27,12 @@ class Setting(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     scope: Mapped[SettingScope] = mapped_column(
-        SAEnum(SettingScope, native_enum=False, length=16)
+        SAEnum(
+            SettingScope,
+            native_enum=False,
+            length=16,
+            values_callable=lambda e: [m.value for m in e],
+        )
     )
     # 0 for global; role_id / user_id otherwise.
     scope_id: Mapped[int] = mapped_column(default=0)

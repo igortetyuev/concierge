@@ -81,6 +81,10 @@ export const IconMic = svg(
   'M19 10v2a7 7 0 0 1-14 0v-2M12 19v4',
 )
 export const IconStop = svg('M6 6h12v12H6z')
+export const IconCopy = svg(
+  'M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',
+  'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+)
 export const IconFile = svg(
   'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z',
   'M14 2v6h6',

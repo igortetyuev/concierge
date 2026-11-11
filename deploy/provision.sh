@@ -15,7 +15,7 @@ ssh "$REMOTE" 'bash -s' <<'REMOTE'
 set -euo pipefail
 
 sudo -n apt-get update -qq
-sudo -n apt-get install -y postgresql14-server caddy ffmpeg curl
+sudo -n apt-get install -y postgresql14-server caddy ffmpeg curl python3-modules-sqlite3
 
 # PostgreSQL: initdb if needed (peer auth local, scram over TCP), localhost only.
 if ! sudo -n test -s /var/lib/pgsql/data/postgresql.conf; then

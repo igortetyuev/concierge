@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,6 +11,9 @@ from pydantic_ai import Agent, RunContext
 
 from concierge.agent import providers
 from concierge.auth.models import User
+from concierge.auth.permissions import has_permission
+from concierge.channels import ChannelEvent, get_hub
+from concierge.codeagent import service as codeagent_service
 from concierge.conversations import service as conversations
 from concierge.core.db import get_sessionmaker
 from concierge.documents.render import FORMATS, render_document
@@ -26,6 +30,7 @@ class ToolDeps:
 
     user_id: int
     conversation_id: int
+    run_id: int | None = None
     documents: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -205,6 +210,48 @@ async def create_document(
     }
 
 
+async def delegate_coding_task(
+    ctx: RunContext[ToolDeps], task: str, project: str
+) -> dict[str, Any]:
+    """Delegate a coding task to a CLI coding agent on the user's Mac.
+
+    The agent (Devin/pi) works in an allowlisted project directory and its
+    final report is returned. `project` is one of the configured project
+    names; the task should be a self-contained brief.
+    """
+    hub = get_hub()
+    last_sent = 0.0
+
+    async def on_event(ev: Any) -> None:
+        nonlocal last_sent
+        now = time.monotonic()
+        if last_sent and now - last_sent < 1.0:
+            return
+        last_sent = now
+        await hub.publish(
+            ChannelEvent(
+                "message.tool",
+                ctx.deps.conversation_id,
+                {
+                    "run_id": ctx.deps.run_id,
+                    "type": "tool",
+                    "name": "delegate_coding_task",
+                    "tool_call_id": ctx.tool_call_id,
+                    "status": "running",
+                    "progress": ev.text[:200],
+                },
+            )
+        )
+
+    async with get_sessionmaker()() as session:
+        user = await session.get(User, ctx.deps.user_id)
+        if user is None:
+            return {"error": "user not found"}
+        return await codeagent_service.delegate(
+            session, user, task, project, on_event
+        )
+
+
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
     f.__name__: f
     for f in (
@@ -214,6 +261,7 @@ CORE_TOOLS: dict[str, Callable[..., Any]] = {
         recall,
         forget,
         create_document,
+        delegate_coding_task,
     )
 }
 
@@ -221,19 +269,23 @@ CORE_TOOLS: dict[str, Callable[..., Any]] = {
 def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
     """Core tool names visible to a role under permissions.tools allow/deny."""
     if permissions.get("*"):
-        return list(CORE_TOOLS)
-    conf = permissions.get("tools")
-    if not isinstance(conf, dict):
-        return []
-    allow = conf.get("allow") or []
-    deny = set(conf.get("deny") or [])
-    if "*" in deny:
-        return []
-    return [
-        n
-        for n in CORE_TOOLS
-        if ("*" in allow or n in allow) and n not in deny
-    ]
+        names = list(CORE_TOOLS)
+    else:
+        conf = permissions.get("tools")
+        if not isinstance(conf, dict):
+            return []
+        allow = conf.get("allow") or []
+        deny = set(conf.get("deny") or [])
+        if "*" in deny:
+            return []
+        names = [
+            n
+            for n in CORE_TOOLS
+            if ("*" in allow or n in allow) and n not in deny
+        ]
+    if not has_permission(permissions, "code_agent"):
+        names = [n for n in names if n != "delegate_coding_task"]
+    return names
 
 
 def core_tools(permissions: dict[str, Any]) -> list[Callable[..., Any]]:

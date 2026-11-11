@@ -32,7 +32,7 @@ import type { PendingMessage, StreamState } from '../store/messages'
 import { markLatestRead } from '../store/realtime'
 import { $detailsOpen } from '../store/ui'
 import Composer from './Composer'
-import MessageParts, { ToolChip } from './MessageParts'
+import MessageParts, { CopyButton, ToolChip } from './MessageParts'
 import Markdown from './Markdown'
 import { IconBack, IconDown, IconInfo, IconRetry, IconTrash } from './icons'
 
@@ -199,6 +199,14 @@ export default function ChatView({ convId }: { convId: number }) {
                   />
                   <span className="msg-meta">
                     {fmtTime(m.created_at)}
+                    {m.author_kind === 'assistant' && (
+                      <CopyButton
+                        text={m.parts
+                          .filter((p) => p.type === 'text')
+                          .map((p) => String(p.text ?? ''))
+                          .join('\n\n')}
+                      />
+                    )}
                     {own && <span className="ticks">{readByAll(m) ? '✓✓' : '✓'}</span>}
                   </span>
                 </div>
@@ -211,7 +219,12 @@ export default function ChatView({ convId }: { convId: number }) {
           <div key={s.runId} className="msg bot stream">
             <div className="bubble">
               {s.tools.map((t) => (
-                <ToolChip key={t.tool_call_id} name={t.name} status={t.status} />
+                <ToolChip
+                  key={t.tool_call_id}
+                  name={t.name}
+                  status={t.status}
+                  progress={t.progress}
+                />
               ))}
               {s.text ? <Markdown text={s.text} /> : null}
               <span className="msg-meta">

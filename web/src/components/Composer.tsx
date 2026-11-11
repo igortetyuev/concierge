@@ -5,6 +5,7 @@ import { useStore } from '@nanostores/react'
 import { apiClient } from '../lib/api'
 import type { AttachmentOut, MessagePart } from '../lib/api'
 import { audioExt, pickAudioMime } from '../lib/audio'
+import { loadPromptHistory, pushPromptHistory } from '../lib/promptHistory'
 import { sendTyping } from '../lib/ws'
 import { sendParts, sendMessage } from '../store/messages'
 import { $composerPrefill } from '../store/ui'
@@ -32,7 +33,16 @@ export default function Composer({ convId }: { convId: number }) {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const lastTyping = useRef(0)
+  const historyRef = useRef<string[] | null>(null)
+  const histIdxRef = useRef(-1)
+  const draftRef = useRef('')
   const prefill = useStore($composerPrefill)
+
+  // ArrowUp/ArrowDown recall index resets when the conversation changes.
+  useEffect(() => {
+    histIdxRef.current = -1
+    draftRef.current = ''
+  }, [convId])
 
   function autoresize() {
     const el = areaRef.current
@@ -162,6 +172,11 @@ export default function Composer({ convId }: { convId: number }) {
       value.trim() || `[вложение] ${ready.map((s) => s.name).join(', ')}`
     for (const s of staged) if (s.previewUrl) URL.revokeObjectURL(s.previewUrl)
     setStaged([])
+    if (value.trim()) {
+      pushPromptHistory(value)
+      historyRef.current = null
+    }
+    histIdxRef.current = -1
     if (parts.length === 1 && parts[0].type === 'text') {
       await sendMessage(convId, String(parts[0].text))
     } else {
@@ -170,10 +185,55 @@ export default function Composer({ convId }: { convId: number }) {
     areaRef.current?.focus()
   }
 
+  function recall(value: string) {
+    onChange(value)
+    requestAnimationFrame(() => {
+      const el = areaRef.current
+      if (el) el.selectionStart = el.selectionEnd = value.length
+    })
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void submit()
+      return
+    }
+    if (
+      e.nativeEvent.isComposing ||
+      e.shiftKey ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey
+    )
+      return
+    const el = e.currentTarget
+    if (el.selectionStart !== el.selectionEnd) return
+    historyRef.current ??= loadPromptHistory()
+    const hist = historyRef.current
+    if (e.key === 'ArrowUp' && !el.value.slice(0, el.selectionStart).includes('\n')) {
+      if (!hist.length) return
+      e.preventDefault()
+      if (histIdxRef.current === -1) {
+        draftRef.current = el.value
+        histIdxRef.current = hist.length - 1
+      } else {
+        histIdxRef.current = Math.max(0, histIdxRef.current - 1)
+      }
+      recall(hist[histIdxRef.current])
+    } else if (
+      e.key === 'ArrowDown' &&
+      histIdxRef.current !== -1 &&
+      !el.value.slice(el.selectionEnd).includes('\n')
+    ) {
+      e.preventDefault()
+      if (histIdxRef.current >= hist.length - 1) {
+        histIdxRef.current = -1
+        recall(draftRef.current)
+      } else {
+        histIdxRef.current += 1
+        recall(hist[histIdxRef.current])
+      }
     }
   }
 

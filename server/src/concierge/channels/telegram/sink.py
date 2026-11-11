@@ -41,7 +41,7 @@ TTS_TEXT_MAX = 4000
 class _Stream:
     tg_msg_id: int | None = None
     buffer: str = ""
-    tools: list[str] = field(default_factory=list)
+    tools: dict[str, dict[str, str]] = field(default_factory=dict)
     last_edit: float = 0.0
     last_text: str = ""
 
@@ -98,7 +98,15 @@ class TelegramSink:
             run_id = event.data.get("run_id")
             if isinstance(run_id, int) and event.data.get("status") == "running":
                 st = self._runs.setdefault(run_id, _Stream())
-                st.tools.append(str(event.data.get("name", "tool")))
+                call_id = str(
+                    event.data.get("tool_call_id")
+                    or event.data.get("name", "tool")
+                )
+                entry = st.tools.setdefault(
+                    call_id, {"name": str(event.data.get("name", "tool"))}
+                )
+                if event.data.get("progress"):
+                    entry["progress"] = str(event.data["progress"])
                 await self._flush(st)
         elif event.type == "message.created":
             await self._message_created(event.data.get("message") or {})
@@ -110,9 +118,14 @@ class TelegramSink:
         text = st.buffer
         if len(text) > MAX_LEN - 100:
             text = "…" + text[-(MAX_LEN - 101) :]
-        running = [t for t in st.tools]
-        if running:
-            suffix = f"🔧 {running[-1]}…"
+        if st.tools:
+            last = next(reversed(st.tools.values()))
+            progress = last.get("progress")
+            suffix = (
+                f"🔧 {last['name']}: {progress}…"
+                if progress
+                else f"🔧 {last['name']}…"
+            )
             text = f"{text}\n{suffix}" if text else suffix
         return text
 

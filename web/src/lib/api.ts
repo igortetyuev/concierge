@@ -128,6 +128,21 @@ export interface TelegramOverviewOut {
   bindings: TelegramBindingOut[]
 }
 
+export interface CodeAgentOut {
+  id: number
+  name: string
+  ssh_host: string
+  workdir: string
+  args: Record<string, unknown>
+  is_default: boolean
+}
+
+export interface CodeAgentProject {
+  name: string
+  path: string
+  description?: string
+}
+
 export interface MemoryItemOut {
   id: number
   scope: 'user' | 'family'
@@ -370,6 +385,22 @@ export const apiClient = {
   adminTelegramOverview: () =>
     api<TelegramOverviewOut>('/admin/telegram/overview'),
   listAdminUsers: () => api<AdminUserOut[]>('/admin/users'),
+
+  listCodeAgents: () => api<CodeAgentOut[]>('/admin/code-agents'),
+  createCodeAgent: (body: {
+    name: string
+    ssh_host: string
+    workdir: string
+    is_default?: boolean
+  }) => post<CodeAgentOut>('/admin/code-agents', body),
+  patchCodeAgent: (id: number, patch: Partial<CodeAgentOut>) =>
+    api<CodeAgentOut>(`/admin/code-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  deleteCodeAgent: (id: number) =>
+    api<{ ok: boolean }>(`/admin/code-agents/${id}`, { method: 'DELETE' }),
 
   listGlobalSettings: () => api<Record<string, unknown>>('/settings/global'),
   putGlobalSetting: (key: string, value: unknown) =>

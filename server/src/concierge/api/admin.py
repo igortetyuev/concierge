@@ -2,7 +2,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from concierge.agent.models import (
     CapabilityBinding,
@@ -549,6 +549,13 @@ async def create_code_agent(
 ) -> CodeAgentOut:
     agent = CodeAgent(**body.model_dump())
     session.add(agent)
+    await session.flush()
+    if agent.is_default:
+        await session.execute(
+            update(CodeAgent)
+            .where(CodeAgent.id != agent.id)
+            .values(is_default=False)
+        )
     await session.commit()
     return CodeAgentOut.of(agent)
 
@@ -562,6 +569,12 @@ async def patch_code_agent(
         raise HTTPException(404, "code agent not found")
     for key, value in body.model_dump(exclude_unset=True).items():
         setattr(agent, key, value)
+    if agent.is_default:
+        await session.execute(
+            update(CodeAgent)
+            .where(CodeAgent.id != agent.id)
+            .values(is_default=False)
+        )
     await session.commit()
     return CodeAgentOut.of(agent)
 

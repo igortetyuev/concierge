@@ -25,6 +25,7 @@ dependencies = [
     "python-pptx>=1.0,<2",
     "aiogram>=3,<4",
     "markdown-it-py>=4,<5",
+    "asyncssh>=2.24.1,<3",
 ]
 
 [dependency-groups]

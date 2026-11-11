@@ -1,4 +1,5 @@
 import httpx
+from sqlalchemy import text
 
 from concierge.core.db import get_sessionmaker
 from concierge.settings import service
@@ -29,6 +30,12 @@ async def test_layered_settings(engine, client: httpx.AsyncClient) -> None:
 
         assert await service.get_value(session, kid, "missing") is None
         assert await service.get_value(session, kid, "missing", "d") == "d"
+
+        # PG's ck_settings_scope allows only enum values, not member names.
+        scopes = (
+            await session.execute(text("SELECT DISTINCT scope FROM settings"))
+        ).scalars()
+        assert set(scopes) == {"global", "role", "user"}
 
     assert token
 

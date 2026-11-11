@@ -287,6 +287,7 @@ a {
 .shell {
   display: flex;
   height: calc(100dvh - var(--kb));
+  overflow: hidden;
 }
 
 .shell-list {
@@ -294,6 +295,7 @@ a {
   flex-direction: column;
   width: 100%;
   min-width: 0;
+  min-height: 0;
   background: var(--surface);
 }
 
@@ -301,6 +303,7 @@ a {
   display: none;
   flex: 1;
   min-width: 0;
+  min-height: 0;
 }
 
 .shell.has-chat .shell-list {
@@ -313,6 +316,15 @@ a {
 }
 
 @media (min-width: 768px) {
+  .convlist-head {
+    padding-left: 12px;
+  }
+
+  .convlist-head .icon-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
   .shell {
     display: grid;
     grid-template-columns: 300px 1fr;
@@ -346,6 +358,7 @@ a {
     border-left: 1px solid var(--border);
     background: var(--surface);
     min-width: 0;
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -409,6 +422,10 @@ a {
 
 .convlist-brand {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 1.15rem;
   font-weight: 700;
   color: var(--accent);
@@ -661,6 +678,31 @@ a {
   opacity: 0.75;
 }
 
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  margin: -8px -6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .copy-btn {
+    opacity: 0;
+  }
+
+  .msg:hover .copy-btn,
+  .msg:focus-within .copy-btn {
+    opacity: 1;
+  }
+}
+
 .stream-cursor {
   animation: blink 1s steps(1) infinite;
   color: var(--accent);
@@ -691,6 +733,14 @@ a {
 
 .tool-chip.status-error {
   color: var(--danger);
+}
+
+.tool-progress {
+  max-width: 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
 }
 
 .part-attachment {
