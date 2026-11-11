@@ -835,6 +835,49 @@ a {
   opacity: 0.75;
 }
 
+.tool-details {
+  display: block;
+  margin: 0 0 4px;
+}
+
+.tool-details > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-block;
+}
+
+.tool-io {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.part-thinking,
+.part-compaction {
+  display: block;
+  margin: 4px 0;
+  font-size: 0.8rem;
+}
+
+.part-thinking > summary,
+.part-compaction > summary {
+  cursor: pointer;
+  font-style: italic;
+}
+
+.part-thinking > .md,
+.part-compaction > .md {
+  opacity: 0.75;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
 .part-attachment {
   display: inline-block;
   padding: 2px 8px;

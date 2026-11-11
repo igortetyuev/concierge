@@ -19,9 +19,11 @@ from pydantic_ai.messages import (
     TextPartDelta,
     UserPromptPart,
 )
+from pydantic_core import to_jsonable_python
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from concierge.agent import history as agent_history
 from concierge.agent import mcp, prompt, providers, title, tools
 from concierge.agent import service as agent_service
 from concierge.agent.tools import ToolDeps, message_text
@@ -48,6 +50,21 @@ log = logging.getLogger(__name__)
 HISTORY_LIMIT = 100
 MEDIA_TEXT_MAX = 4000
 TTS_TEXT_MAX = 4000
+
+# Auto-compaction: once estimated context usage reaches COMPACTION_THRESHOLD
+# of the binding's params.context_length, older messages are summarized into
+# a `compaction` marker message and only the tail is replayed verbatim.
+COMPACTION_THRESHOLD = 0.75
+COMPACTION_KEEP_TAIL = 12
+COMPACTION_INPUT_MAX = 200_000
+COMPACTION_SUMMARY_MAX = 8000
+COMPACTION_INSTRUCTIONS = (
+    "Сожми историю диалога в плотный конспект для продолжения работы "
+    "агента-консьержа. Сохрани: решения и договорённости, незавершённые "
+    "задачи, важные факты (имена, цифры, даты, ссылки, идентификаторы), "
+    "контекст последних вопросов. Пиши по-русски, короткими пунктами, "
+    "без вступлений."
+)
 
 ERROR_TEXT = "Произошла ошибка при обработке запроса."
 
@@ -134,7 +151,26 @@ class AgentRuntime:
             ):
                 funcs.append(tools.make_ask_model_tool(named_names))
             capabilities = tools.allowed_capabilities(user.role.permissions)
-            history = self._build_history(
+            prefix: list[ModelMessage] = []
+            if (
+                bound is not None
+                and bound.context_length
+                and len(history_rows) > COMPACTION_KEEP_TAIL
+            ):
+                est = await self._estimate_context(
+                    session, conv.id, history_rows
+                )
+                if est >= bound.context_length * COMPACTION_THRESHOLD:
+                    prefix, history_rows = await self._compact(
+                        session,
+                        conv,
+                        history_rows,
+                        bound,
+                        user,
+                        member_names,
+                        est,
+                    )
+            history = prefix + self._build_history(
                 history_rows, conv, member_names, atts
             )
             deps = ToolDeps(user_id=user.id, conversation_id=conv.id)
@@ -167,7 +203,11 @@ class AgentRuntime:
             capabilities=capabilities,
             model_settings=bound.settings,
         )
-        tool_parts: list[dict[str, Any]] = []
+        # Fallback parts collected from stream events; on success the stored
+        # parts come from run_result.new_messages() instead (full fidelity:
+        # thinking blocks, provider signatures, tool args and results).
+        run_parts: list[dict[str, Any]] = []
+        run_result: Any = None
         output = ""
         usage: dict[str, Any] = {}
         try:
@@ -198,15 +238,25 @@ class AgentRuntime:
                             {"run_id": run_id, "text": delta_text},
                         )
                     if isinstance(event, FunctionToolCallEvent):
-                        part = {
-                            "type": "tool",
-                            "name": event.part.tool_name,
-                            "tool_call_id": event.part.tool_call_id,
-                            "status": "running",
-                        }
-                        tool_parts.append(part)
+                        call = event.part
+                        run_parts.append(
+                            {
+                                "type": "tool_call",
+                                "name": call.tool_name,
+                                "tool_call_id": call.tool_call_id,
+                                "args": to_jsonable_python(call.args),
+                            }
+                        )
                         await self._emit(
-                            "message.tool", conv.id, {"run_id": run_id, **part}
+                            "message.tool",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "type": "tool",
+                                "name": call.tool_name,
+                                "tool_call_id": call.tool_call_id,
+                                "status": "running",
+                            },
                         )
                     elif (
                         isinstance(event, PartStartEvent)
@@ -214,55 +264,80 @@ class AgentRuntime:
                     ):
                         # Provider-side tools (e.g. web_search) arrive as part
                         # events, not FunctionToolCallEvent.
-                        part = {
-                            "type": "tool",
-                            "name": event.part.tool_name,
-                            "tool_call_id": event.part.tool_call_id or "",
-                            "status": "running",
-                        }
-                        tool_parts.append(part)
+                        ncall = event.part
+                        run_parts.append(
+                            {
+                                "type": "tool_call",
+                                "name": ncall.tool_name,
+                                "tool_call_id": ncall.tool_call_id or "",
+                                "args": to_jsonable_python(ncall.args),
+                                "native": True,
+                            }
+                        )
                         await self._emit(
-                            "message.tool", conv.id, {"run_id": run_id, **part}
+                            "message.tool",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "type": "tool",
+                                "name": ncall.tool_name,
+                                "tool_call_id": ncall.tool_call_id or "",
+                                "status": "running",
+                            },
                         )
                     elif (
                         isinstance(event, PartStartEvent)
                         and isinstance(event.part, NativeToolReturnPart)
                     ):
-                        for p in tool_parts:
-                            if p["tool_call_id"] == event.part.tool_call_id:
-                                p["status"] = "done"
+                        nret = event.part
+                        run_parts.append(
+                            {
+                                "type": "tool_return",
+                                "name": nret.tool_name,
+                                "tool_call_id": nret.tool_call_id or "",
+                                "content": to_jsonable_python(nret.content),
+                                "native": True,
+                            }
+                        )
                         await self._emit(
                             "message.tool",
                             conv.id,
                             {
                                 "run_id": run_id,
                                 "type": "tool",
-                                "name": event.part.tool_name,
-                                "tool_call_id": event.part.tool_call_id,
+                                "name": nret.tool_name,
+                                "tool_call_id": nret.tool_call_id,
                                 "status": "done",
                             },
                         )
                     elif isinstance(event, FunctionToolResultEvent):
-                        status = (
-                            "error"
-                            if isinstance(event.part, RetryPromptPart)
-                            else "done"
-                        )
-                        for p in tool_parts:
-                            if p["tool_call_id"] == event.part.tool_call_id:
-                                p["status"] = status
+                        res = event.part
+                        retry = isinstance(res, RetryPromptPart)
+                        ret: dict[str, Any] = {
+                            "type": "tool_return",
+                            "name": getattr(res, "tool_name", None) or "tool",
+                            "tool_call_id": res.tool_call_id,
+                            "content": to_jsonable_python(
+                                getattr(res, "content", None)
+                            ),
+                        }
+                        if retry:
+                            ret["retry"] = True
+                        run_parts.append(ret)
                         await self._emit(
                             "message.tool",
                             conv.id,
                             {
                                 "run_id": run_id,
                                 "type": "tool",
-                                "name": event.part.tool_name,
-                                "tool_call_id": event.part.tool_call_id,
-                                "status": status,
+                                "name": getattr(res, "tool_name", None)
+                                or "tool",
+                                "tool_call_id": res.tool_call_id,
+                                "status": "error" if retry else "done",
                             },
                         )
                     elif isinstance(event, AgentRunResultEvent):
+                        run_result = event.result
                         output = str(event.result.output)
                         usage = dataclasses.asdict(event.result.usage)
         except Exception as exc:
@@ -272,15 +347,24 @@ class AgentRuntime:
                 session_maker,
                 conv.id,
                 run_id,
-                ERROR_TEXT,
-                tool_parts,
+                [*run_parts, {"type": "text", "text": ERROR_TEXT}],
                 deps.documents,
             )
             return
 
         await self._finish(run_id, conv.id, "done", usage=usage)
+        stored_parts = (
+            agent_history.serialize_parts(run_result.new_messages())
+            if run_result is not None
+            else []
+        )
+        if not stored_parts:
+            stored_parts = [
+                *run_parts,
+                {"type": "text", "text": output},
+            ]
         await self._save_reply(
-            session_maker, conv.id, run_id, output, tool_parts, deps.documents
+            session_maker, conv.id, run_id, stored_parts, deps.documents
         )
         await self._ensure_title(conv.id, user, trigger.parts)
         await self._maybe_tts_reply(conv.id, user, output)
@@ -324,7 +408,30 @@ class AgentRuntime:
     ) -> list[ModelMessage]:
         out: list[ModelMessage] = []
         for m in rows:
-            text = self._content(m.parts, conv, member_names, m.author_id, atts)
+            marker = next(
+                (p for p in m.parts if p.get("type") == "compaction"), None
+            )
+            if marker is not None:
+                # Everything before the latest marker was folded into its
+                # summary — replay from here.
+                out = [
+                    ModelRequest(
+                        parts=[
+                            UserPromptPart(
+                                agent_history.compaction_prompt(marker)
+                            )
+                        ]
+                    )
+                ]
+                continue
+            if m.author_kind == "assistant":
+                rebuilt = agent_history.deserialize_parts(m.parts)
+                if rebuilt:
+                    out.extend(rebuilt)
+                    continue
+            text = self._content(
+                m.parts, conv, member_names, m.author_id, atts
+            )
             if not text:
                 continue
             if m.author_kind == "assistant":
@@ -332,6 +439,129 @@ class AgentRuntime:
             else:
                 out.append(ModelRequest(parts=[UserPromptPart(text)]))
         return out
+
+    async def _estimate_context(
+        self,
+        session: AsyncSession,
+        conversation_id: int,
+        rows: list[Message],
+    ) -> int:
+        """Estimated context usage in tokens: the better of the last run's
+        real input_tokens and a chars-based estimate of stored history."""
+        last = (
+            await session.execute(
+                select(Run)
+                .where(
+                    Run.conversation_id == conversation_id,
+                    Run.status == "done",
+                )
+                .order_by(Run.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        prev_input = int((last.usage or {}).get("input_tokens") or 0) if last else 0
+        # Only what a replay would contain: the last marker's summary plus
+        # everything after it (earlier rows are superseded, not dropped).
+        marker_idx = max(
+            (
+                i
+                for i, m in enumerate(rows)
+                if any(p.get("type") == "compaction" for p in m.parts)
+            ),
+            default=-1,
+        )
+        effective = rows[marker_idx:] if marker_idx >= 0 else rows
+        stored = sum(
+            agent_history.estimate_parts_tokens(m.parts) for m in effective
+        )
+        return max(prev_input, stored)
+
+    async def _compact(
+        self,
+        session: AsyncSession,
+        conv: Conversation,
+        rows: list[Message],
+        bound: providers.BoundModel,
+        user: User,
+        member_names: dict[int, str],
+        tokens_before: int,
+    ) -> tuple[list[ModelMessage], list[Message]]:
+        """Summarize all but the tail rows into a `compaction` marker message.
+
+        Returns (history prefix carrying the summary, remaining tail rows).
+        On any failure the original rows are kept untouched.
+        """
+        # Fold any previous marker into the new summary rather than leaving
+        # it inside the replayed tail.
+        marker_idx = max(
+            (
+                i
+                for i, m in enumerate(rows)
+                if any(p.get("type") == "compaction" for p in m.parts)
+            ),
+            default=-1,
+        )
+        effective = rows[marker_idx:] if marker_idx >= 0 else rows
+        if len(effective) <= COMPACTION_KEEP_TAIL:
+            return [], rows
+        tail = effective[-COMPACTION_KEEP_TAIL:]
+        old = effective[:-COMPACTION_KEEP_TAIL]
+        rendered = "\n\n".join(
+            f"{member_names.get(m.author_id) if m.author_id is not None else m.author_kind}: "
+            f"{agent_history.render_for_summary(m.parts)}"
+            for m in old
+        )
+        try:
+            # Summarization is a utility call — prefer the cheap chat_fast
+            # capability, falling back to the chat model itself.
+            summarizer = await providers.get_model(
+                session, "chat_fast", user
+            )
+            agent = Agent(
+                (summarizer or bound).model,
+                instructions=COMPACTION_INSTRUCTIONS,
+                model_settings=(summarizer or bound).settings,
+            )
+            result = await agent.run(rendered[:COMPACTION_INPUT_MAX])
+            summary = (
+                str(result.output).strip()[:COMPACTION_SUMMARY_MAX]
+                or rendered[:COMPACTION_SUMMARY_MAX]
+            )
+        except Exception:
+            log.exception("context compaction failed conv=%s", conv.id)
+            return [], rows
+        marker = await conversations.post_assistant_message(
+            session,
+            conv,
+            [
+                agent_history.compaction_part(
+                    summary, old[-1].seq, len(old), tokens_before
+                )
+            ],
+            None,
+            "system",
+        )
+        await self._hub.publish(
+            ChannelEvent(
+                "message.created", conv.id, {"message": _message_dict(marker)}
+            )
+        )
+        log.info(
+            "context compacted conv=%s: %s msgs -> summary (~%s tokens)",
+            conv.id,
+            len(old),
+            tokens_before,
+        )
+        prefix: list[ModelMessage] = [
+            ModelRequest(
+                parts=[
+                    UserPromptPart(
+                        agent_history.compaction_prompt(marker.parts[0])
+                    )
+                ]
+            )
+        ]
+        return prefix, tail
 
     @staticmethod
     def _content(
@@ -346,7 +576,14 @@ class AgentRuntime:
             ptype = p.get("type")
             if ptype == "text":
                 chunks.append(str(p.get("text", "")))
-            elif ptype in ("tool", "mention"):
+            elif ptype in (
+                "tool",
+                "tool_call",
+                "tool_return",
+                "thinking",
+                "compaction",
+                "mention",
+            ):
                 continue
             elif (aid := media_service.part_attachment_id(p)) is not None and (
                 att := atts.get(aid)
@@ -404,21 +641,15 @@ class AgentRuntime:
         session_maker: Any,
         conversation_id: int,
         run_id: int,
-        text: str,
-        tool_parts: list[dict[str, Any]],
+        parts: list[dict[str, Any]],
         document_parts: list[dict[str, Any]] | None = None,
     ) -> None:
         async with session_maker() as session:
             conv = await session.get(Conversation, conversation_id)
             if conv is None:
                 return
-            parts = [
-                *tool_parts,
-                {"type": "text", "text": text},
-                *(document_parts or []),
-            ]
             msg = await conversations.post_assistant_message(
-                session, conv, parts, run_id
+                session, conv, [*parts, *(document_parts or [])], run_id
             )
             out = _message_dict(msg)
         await self._hub.publish(

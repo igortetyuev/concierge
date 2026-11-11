@@ -443,7 +443,7 @@ async def test_delegate_tool_e2e(engine, client: httpx.AsyncClient, monkeypatch)
         reply = (
             await session.execute(select(Message).where(Message.run_id == run.id))
         ).scalar_one()
-    tool_parts = [p for p in reply.parts if p["type"] == "tool"]
+    tool_parts = [p for p in reply.parts if p["type"] == "tool_call"]
     assert any(p["name"] == "delegate_coding_task" for p in tool_parts)
 
 

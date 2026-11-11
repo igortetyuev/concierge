@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import httpx
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy import select
 from starlette.testclient import TestClient
 
@@ -17,7 +18,7 @@ from concierge.agent.providers import get_model
 from concierge.agent.runtime import get_runtime
 from concierge.api.app import create_app
 from concierge.auth.models import Role
-from concierge.conversations.models import Message, Run
+from concierge.conversations.models import Conversation, Message, Run
 from concierge.core import db
 from tests.conftest import auth, login, make_user
 from tests.test_ws import _connect_and_subscribe, _wait_type
@@ -299,7 +300,7 @@ async def test_agent_run_persists_and_uses_tools(
     text_parts = [p for p in reply.parts if p["type"] == "text"]
     assert text_parts == [{"type": "text", "text": "ответ"}]
     # TestModel call_tools="all" -> both core tools were exposed and called.
-    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
+    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool_call"}
     assert {"search_messages", "current_datetime"} <= tool_names
 
 
@@ -392,7 +393,7 @@ async def test_ask_model_exposed_in_run(
                 select(Message).where(Message.run_id == run.id)
             )
         ).scalar_one()
-    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
+    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool_call"}
     assert "ask_model" in tool_names
 
 
@@ -448,7 +449,7 @@ async def test_tools_deny_list(engine, client: httpx.AsyncClient) -> None:
                 select(Message).where(Message.run_id == run.id)
             )
         ).scalar_one()
-    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
+    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool_call"}
     assert "current_datetime" not in tool_names
     assert "search_messages" in tool_names
 
@@ -499,7 +500,7 @@ async def test_mcp_stdio_server_called(
                 select(Message).where(Message.run_id == run.id)
             )
         ).scalar_one()
-    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool"}
+    tool_names = {p["name"] for p in reply.parts if p["type"] == "tool_call"}
     assert "echo_srv_echo" in tool_names
     # Role child has mcp_servers=[] -> server not visible to that role.
     await make_user("kid", "child")
@@ -513,7 +514,7 @@ async def test_mcp_stdio_server_called(
                 select(Message).where(Message.run_id == run_k.id)
             )
         ).scalar_one()
-    tool_names_k = {p["name"] for p in reply_k.parts if p["type"] == "tool"}
+    tool_names_k = {p["name"] for p in reply_k.parts if p["type"] == "tool_call"}
     assert "echo_srv_echo" not in tool_names_k
 
 
@@ -701,3 +702,61 @@ async def test_e2e_stream_over_ws(engine, client: httpx.AsyncClient) -> None:
             assert kinds == ["user", "assistant"]
 
     await asyncio.to_thread(scenario)
+
+
+async def test_run_persists_tool_calls_and_compacts(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """Tool calls/returns are stored on the reply message, and once estimated
+    context passes 75% of binding params.context_length a compaction marker
+    message is posted and future history starts from its summary."""
+    await _add_provider(
+        "chat",
+        params={"custom_output_text": "ответ", "context_length": 80},
+    )
+    await _add_provider(
+        "chat_fast", params={"custom_output_text": "конспект"}
+    )
+    user = await make_user("carol", "adult")
+    token = await login(client, "carol")
+    cid = await _make_conv(client, token)
+    last = None
+    for i in range(9):
+        last = await _post_and_collect(
+            client, token, cid, f"сообщение {i} " + "x" * 60
+        )
+        await _run_and_wait(cid, last["id"])
+
+    async with db.get_sessionmaker()() as session:
+        msgs = list(
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == cid)
+                    .order_by(Message.seq)
+                )
+            ).scalars()
+        )
+        conv = await session.get(Conversation, cid)
+    replies = [m for m in msgs if m.author_kind == "assistant"]
+    assert replies
+    # TestModel calls tools on the first run only
+    calls = [p for p in replies[0].parts if p["type"] == "tool_call"]
+    rets = [p for p in replies[0].parts if p["type"] == "tool_return"]
+    assert calls and "args" in calls[0] and calls[0]["tool_call_id"]
+    assert rets and "content" in rets[0]
+    texts = [p for p in replies[0].parts if p["type"] == "text"]
+    assert texts and texts[-1]["text"] == "ответ"
+
+    markers = [
+        m
+        for m in msgs
+        if m.author_kind == "system"
+        and any(p.get("type") == "compaction" for p in m.parts)
+    ]
+    assert markers, "expected a compaction marker message"
+    assert conv is not None
+    hist = get_runtime()._build_history(msgs, conv, {user.id: "Carol"}, {})
+    assert isinstance(hist[0], ModelRequest)
+    assert isinstance(hist[0].parts[0], UserPromptPart)
+    assert "Контекст сжат автоматически" in str(hist[0].parts[0].content)

@@ -80,6 +80,43 @@ export function ToolChip({
   )
 }
 
+const TOOL_DETAILS_MAX = 4000
+
+function fmtToolValue(v: unknown): string | null {
+  if (v == null) return null
+  const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2)
+  return s.length > TOOL_DETAILS_MAX ? `${s.slice(0, TOOL_DETAILS_MAX)}…` : s
+}
+
+/** Persisted tool call + its return: chip with expandable args/result. */
+function ToolCallBlock({
+  part,
+  ret,
+}: {
+  part: MessagePart
+  ret?: MessagePart
+}) {
+  const failed =
+    ret != null &&
+    (ret.retry === true ||
+      ret.outcome === 'failed' ||
+      ret.outcome === 'denied')
+  const status = failed ? 'error' : 'done'
+  const args = fmtToolValue(part.args)
+  const result = fmtToolValue(ret?.content)
+  const chip = (
+    <ToolChip name={String(part.name ?? 'tool')} status={status} />
+  )
+  if (args == null && result == null) return chip
+  return (
+    <details className="tool-details">
+      <summary>{chip}</summary>
+      {args != null && <pre className="tool-io">{args}</pre>}
+      {result != null && <pre className="tool-io">{result}</pre>}
+    </details>
+  )
+}
+
 interface AttachmentPartProps {
   part: MessagePart
   convId?: number
@@ -257,6 +294,11 @@ export default function MessageParts({
 }: MessagePartsProps) {
   const hasText = parts.some((p) => p.type === 'text')
   const imageParts = parts.filter((p) => p.type === 'image' && p.attachment_id != null)
+  const toolReturns = new Map(
+    parts
+      .filter((p) => p.type === 'tool_return')
+      .map((p) => [String(p.tool_call_id ?? ''), p]),
+  )
   const [viewer, setViewer] = useState<{ idx: number; url: string } | null>(null)
   return (
     <>
@@ -292,6 +334,37 @@ export default function MessageParts({
         }
         if (p.type === 'tool') {
           return <ToolChip key={p.tool_call_id ?? i} name={String(p.name ?? 'tool')} status={p.status} />
+        }
+        if (p.type === 'tool_call') {
+          return (
+            <ToolCallBlock
+              key={String(p.tool_call_id ?? i)}
+              part={p}
+              ret={toolReturns.get(String(p.tool_call_id ?? ''))}
+            />
+          )
+        }
+        if (p.type === 'tool_return') {
+          return null // rendered inside the matching ToolCallBlock
+        }
+        if (p.type === 'thinking') {
+          return (
+            <details key={i} className="part-thinking">
+              <summary className="muted">рассуждение</summary>
+              <Markdown text={String(p.content ?? '')} />
+            </details>
+          )
+        }
+        if (p.type === 'compaction') {
+          const count = Number(p.count ?? 0)
+          return (
+            <details key={i} className="part-compaction">
+              <summary className="muted">
+                контекст сжат{count > 0 ? ` — ${count} сообщений в конспект` : ''}
+              </summary>
+              <Markdown text={String(p.text ?? '')} />
+            </details>
+          )
         }
         if (p.attachment_id != null) {
           const imgIdx = p.type === 'image' ? imageParts.indexOf(p) : -1

@@ -25,6 +25,9 @@ class BoundModel:
     model: Model
     label: str  # e.g. "openai/gpt-5.2" — stored on runs.model
     settings: ModelSettings
+    # Declared context window in tokens (params.context_length); drives the
+    # auto-compaction trigger. None = unknown, compaction stays off.
+    context_length: int | None = None
 
 
 _MODEL_SETTINGS_KEYS = (
@@ -151,6 +154,15 @@ _TEST_MODEL_KWARGS = set(inspect.signature(TestModel.__init__).parameters) - {
 }
 
 
+def _context_length(params: dict[str, Any]) -> int | None:
+    raw = params.get("context_length")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)) and raw > 0:
+        return int(raw)
+    return None
+
+
 async def _bind(
     session: AsyncSession,
     user: User,
@@ -161,6 +173,7 @@ async def _bind(
     if provider is None or not provider.enabled:
         return None
     label = f"{provider.name}/{model_name}"
+    context_length = _context_length(params)
     if provider.kind == "test":
         # Test-only provider kind for e2e tests without real LLM calls.
         # Its default profile claims native-tool support but _request() then
@@ -171,12 +184,16 @@ async def _bind(
         kwargs.setdefault(
             "profile", ModelProfile(supported_native_tools=frozenset())
         )
-        return BoundModel(TestModel(**kwargs), label, ModelSettings())
+        return BoundModel(
+            TestModel(**kwargs), label, ModelSettings(), context_length
+        )
     api_key = await provider_api_key(session, user, provider)
     model = _build_model(provider, model_name, api_key)
     if model is None:
         return None
-    return BoundModel(model, label, _model_settings(params))
+    return BoundModel(
+        model, label, _model_settings(params), context_length
+    )
 
 
 async def _bound(

@@ -71,6 +71,24 @@ TODO: привязать capability `stt` → provider `openai-compatible` base_
 ключ (неразрешимый ref считается литеральным ключом), модель
 `gpt://<folder_id>/aliceai-llm/latest`.
 
+## Лог сессии и компакшен
+
+Ответы ассистента хранят полный лог прогона: `thinking` (с provider-подписями
+для round-trip), `tool_call` (name/args/tool_call_id), `tool_return` (content,
+`retry`/`outcome`/`native`) — сериализация/реплей в `agent/history.py`
+(`serialize_parts`/`deserialize_parts`). При реплее dangling-вызовы получают
+синтетический «[вызов прерван]» return, сиротские return'ы отбрасываются,
+легаси `{"type":"tool"}` (без args/result) пропускаются.
+
+Авто-компакшен: при оценке контекста ≥75% от `params.context_length` биндинга
+capability `chat` старые сообщения сворачиваются в конспект (модель —
+`chat_fast`, фолбэк `chat`), в ленту пишется системное сообщение
+`{"type":"compaction","text","upto_seq","count"}`; история для следующих
+запросов начинается с конспекта + хвост из 12 сообщений. Оценка —
+`max(input_tokens прошлого run, chars/4)`. Без `context_length` в params
+биндинга компакшен выключен. Задаётся в `/admin` → Провайдеры → params JSON
+биндинга, напр. `{"context_length": 128000}`.
+
 ## Админка и эксплуатация
 
 `/admin` в PWA (иконка-гаечный ключ в шапке, видна при `manage_*`/`settings.global` правах):
