@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
-import { fetchAttachmentObjectUrl } from '../lib/api'
+import { apiClient, fetchAttachmentObjectUrl } from '../lib/api'
 import type { MessagePart } from '../lib/api'
-import { $attachments } from '../store/attachments'
+import { $attachments, setAttachment } from '../store/attachments'
+import { $composerPrefill } from '../store/ui'
 import Markdown from './Markdown'
 import { IconCheck, IconClose, IconFile, IconTool } from './icons'
 
@@ -19,7 +20,15 @@ export function ToolChip({ name, status }: { name: string; status?: string }) {
   )
 }
 
-function AttachmentPart({ part }: { part: MessagePart }) {
+interface AttachmentPartProps {
+  part: MessagePart
+  convId?: number
+  origin?: string
+  hasText: boolean
+  autoplay: boolean
+}
+
+function AttachmentPart({ part, convId, origin, hasText, autoplay }: AttachmentPartProps) {
   const id = Number(part.attachment_id)
   // The WS attachment.updated event carries fresher derived data than the
   // expanded part (which was serialized when the message was fetched).
@@ -34,6 +43,7 @@ function AttachmentPart({ part }: { part: MessagePart }) {
   const media = part.type === 'image' || part.type === 'audio' || part.type === 'video'
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (!media || !id) return
@@ -66,6 +76,22 @@ function AttachmentPart({ part }: { part: MessagePart }) {
     }
   }
 
+  async function retryStt() {
+    setBusy(true)
+    try {
+      setAttachment(await apiClient.retranscribe(id))
+    } catch {
+      /* the button just stays available */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const isVoice = part.type === 'audio' && origin === 'voice_quick'
+  const canRetryStt = isVoice && (status === 'error' || status === 'skipped')
+  const canSendTranscript =
+    isVoice && status === 'done' && !!transcript && !hasText && convId != null
+
   const note =
     status === 'processing' || status === 'pending'
       ? 'обрабатывается…'
@@ -84,7 +110,7 @@ function AttachmentPart({ part }: { part: MessagePart }) {
       {part.type === 'audio' &&
         (url ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption -- transcript renders below
-          <audio className="msg-audio" controls src={url} />
+          <audio className="msg-audio" controls src={url} autoPlay={autoplay} />
         ) : (
           <span className="part-attachment muted">{failed ? name : 'загрузка…'}</span>
         ))}
@@ -108,20 +134,82 @@ function AttachmentPart({ part }: { part: MessagePart }) {
         </span>
       ) : null}
       {note && <span className="part-note muted">{note}</span>}
+      {canRetryStt && (
+        <button className="vq-act" onClick={() => void retryStt()} disabled={busy}>
+          {busy ? 'Распознаю…' : 'Повторить распознавание'}
+        </button>
+      )}
+      {canSendTranscript && (
+        <button
+          className="vq-act"
+          onClick={() =>
+            convId != null &&
+            $composerPrefill.set({ convId, text: String(transcript) })
+          }
+        >
+          Исправить и отправить
+        </button>
+      )}
     </span>
   )
 }
 
-export default function MessageParts({ parts }: { parts: MessagePart[] }) {
+interface MessagePartsProps {
+  parts: MessagePart[]
+  convId?: number
+  origin?: string
+  /** Autoplay audio marked `tts` (a fresh voice-quick reply). */
+  autoplayTts?: boolean
+}
+
+export default function MessageParts({
+  parts,
+  convId,
+  origin,
+  autoplayTts = false,
+}: MessagePartsProps) {
+  const hasText = parts.some((p) => p.type === 'text')
   return (
     <>
       {parts.map((p, i) => {
-        if (p.type === 'text') return <Markdown key={i} text={String(p.text ?? '')} />
+        if (p.type === 'text') {
+          if (p.transcribed === true && convId != null) {
+            return (
+              <div key={i} className="transcribed">
+                <Markdown text={String(p.text ?? '')} />
+                <span className="transcribed-tag muted">
+                  распознано
+                  <button
+                    className="vq-act"
+                    onClick={() =>
+                      $composerPrefill.set({
+                        convId,
+                        text: String(p.text ?? ''),
+                      })
+                    }
+                  >
+                    исправить
+                  </button>
+                </span>
+              </div>
+            )
+          }
+          return <Markdown key={i} text={String(p.text ?? '')} />
+        }
         if (p.type === 'tool') {
           return <ToolChip key={p.tool_call_id ?? i} name={String(p.name ?? 'tool')} status={p.status} />
         }
         if (p.attachment_id != null) {
-          return <AttachmentPart key={String(p.attachment_id)} part={p} />
+          return (
+            <AttachmentPart
+              key={String(p.attachment_id)}
+              part={p}
+              convId={convId}
+              origin={origin}
+              hasText={hasText}
+              autoplay={autoplayTts && p.tts === true}
+            />
+          )
         }
         return (
           <span key={i} className="part-attachment">

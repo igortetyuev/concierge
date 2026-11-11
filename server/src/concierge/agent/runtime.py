@@ -32,15 +32,18 @@ from concierge.conversations.models import (
 )
 from concierge.core.db import get_sessionmaker, utcnow
 from concierge.media import service as media_service
+from concierge.media import tts
 from concierge.media.models import Attachment
 from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.memory import service as memory_service
+from concierge.settings import service as settings_service
 
 log = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 100
 MEDIA_TEXT_MAX = 4000
+TTS_TEXT_MAX = 4000
 
 ERROR_TEXT = "Произошла ошибка при обработке запроса."
 
@@ -217,6 +220,7 @@ class AgentRuntime:
             session_maker, conv.id, run_id, output, tool_parts
         )
         await self._ensure_title(conv.id, user, trigger.parts)
+        await self._maybe_tts_reply(conv.id, user, output)
 
     async def _member_names(
         self, session: AsyncSession, conversation_id: int
@@ -348,24 +352,65 @@ class AgentRuntime:
             msg = await conversations.post_assistant_message(
                 session, conv, parts, run_id
             )
-            out = {
-                "id": msg.id,
-                "conversation_id": msg.conversation_id,
-                "seq": msg.seq,
-                "author_kind": msg.author_kind,
-                "author_id": msg.author_id,
-                "parts": msg.parts,
-                "run_id": msg.run_id,
-                "source_channel": msg.source_channel,
-                "client_msg_id": msg.client_msg_id,
-                "created_at": msg.created_at.isoformat()
-                if msg.created_at
-                else None,
-            }
+            out = _message_dict(msg)
         await self._hub.publish(
             ChannelEvent("message.created", conversation_id, {"message": out})
         )
         memory_indexer.kick()
+
+    async def _maybe_tts_reply(
+        self, conversation_id: int, user: User, text: str
+    ) -> None:
+        """Voice-quick sessions with voice_quick.tts_reply get the reply
+        voiced through the `tts` capability as a follow-up audio message."""
+        if not text.strip():
+            return
+        try:
+            async with get_sessionmaker()() as session:
+                conv = await session.get(Conversation, conversation_id)
+                if conv is None or conv.origin != "voice_quick":
+                    return
+                if not await settings_service.get_value(
+                    session, user, "voice_quick.tts_reply", False
+                ):
+                    return
+                audio = await tts.synthesize_speech(
+                    session, user, text[:TTS_TEXT_MAX]
+                )
+            if audio is None:
+                return
+            data, mime = audio
+            name = "reply.mp3" if mime == "audio/mpeg" else "reply.wav"
+            async with get_sessionmaker()() as session:
+                att, _ = await media_service.create_attachment(
+                    session, user, name, mime, data, conversation_id
+                )
+                att.derived = {"status": "done"}
+                conv = await session.get(Conversation, conversation_id)
+                if conv is None:
+                    return
+                msg = await conversations.post_assistant_message(
+                    session,
+                    conv,
+                    [
+                        {
+                            "type": "audio",
+                            "attachment_id": att.id,
+                            "tts": True,
+                            "name": name,
+                            "mime": mime,
+                        }
+                    ],
+                    None,
+                )
+                out = _message_dict(msg)
+            await self._hub.publish(
+                ChannelEvent(
+                    "message.created", conversation_id, {"message": out}
+                )
+            )
+        except Exception:
+            log.exception("tts reply failed conv=%s", conversation_id)
 
     async def _ensure_title(
         self, conversation_id: int, user: User, parts: list[dict[str, Any]]
@@ -380,6 +425,22 @@ class AgentRuntime:
                     {"conversation": {"id": conversation_id, "title": new_title}},
                 )
             )
+
+
+def _message_dict(m: Message) -> dict[str, Any]:
+    """WS payload for a message (same shape as the REST MessageOut)."""
+    return {
+        "id": m.id,
+        "conversation_id": m.conversation_id,
+        "seq": m.seq,
+        "author_kind": m.author_kind,
+        "author_id": m.author_id,
+        "parts": m.parts,
+        "run_id": m.run_id,
+        "source_channel": m.source_channel,
+        "client_msg_id": m.client_msg_id,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    }
 
 
 _runtime = AgentRuntime(get_hub())

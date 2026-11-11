@@ -22,6 +22,7 @@ import {
   $messages,
   $pending,
   $streams,
+  $ttsAutoplay,
   discardPending,
   loadInitial,
   loadOlder,
@@ -121,6 +122,10 @@ export default function ChatView({ convId }: { convId: number }) {
   const archived = conv?.status === 'archived'
   const canManage = conv != null && (conv.owner_id === me?.id || me?.permissions['*'] === true)
 
+  // Only a just-arrived voice reply autoplays; history never does.
+  // Only a just-arrived (WS) voice reply autoplays; history never does.
+  const ttsAutoplayId = useStore($ttsAutoplay)[convId]
+
   return (
     <div className="chat">
       <header className="chat-head">
@@ -163,6 +168,18 @@ export default function ChatView({ convId }: { convId: number }) {
             !prev ||
             !isSameDay(new Date(m.created_at ?? 0), new Date(prev.created_at ?? 0))
           const own = m.author_id != null && m.author_id === me?.id
+          if (m.author_kind === 'system') {
+            return (
+              <div key={m.id}>
+                {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
+                <div className="msg sys">
+                  <span className="sys-note muted">
+                    <MessageParts parts={m.parts} convId={convId} origin={conv?.origin} />
+                  </span>
+                </div>
+              </div>
+            )
+          }
           return (
             <div key={m.id}>
               {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
@@ -174,7 +191,12 @@ export default function ChatView({ convId }: { convId: number }) {
                   {!own && conv?.kind === 'group' && m.author_kind !== 'assistant' && (
                     <div className="msg-author">{authorName(m.author_id)}</div>
                   )}
-                  <MessageParts parts={m.parts} />
+                  <MessageParts
+                    parts={m.parts}
+                    convId={convId}
+                    origin={conv?.origin}
+                    autoplayTts={m.id === ttsAutoplayId}
+                  />
                   <span className="msg-meta">
                     {fmtTime(m.created_at)}
                     {own && <span className="ticks">{readByAll(m) ? '✓✓' : '✓'}</span>}

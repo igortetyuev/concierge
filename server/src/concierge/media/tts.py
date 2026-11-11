@@ -1,0 +1,81 @@
+"""Text-to-speech through the `tts` capability binding.
+
+Provider kinds: `test` (a short silent wav for tests),
+`openai`/`openai-compatible` (POST /audio/speech — OpenAI or compatible
+servers like openedai-speech / Kokoro-FastAPI).
+"""
+
+import io
+import logging
+import wave
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from concierge.auth.models import User
+
+log = logging.getLogger(__name__)
+
+_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+
+
+async def synthesize_speech(
+    session: AsyncSession, user: User, text: str
+) -> tuple[bytes, str] | None:
+    """Synthesize `text` to (audio bytes, mime); None when no TTS is bound."""
+    # Lazy: concierge.agent imports the media pipeline at module load.
+    from concierge.agent.providers import resolve_ref
+    from concierge.agent.service import get_capability_binding
+
+    binding = await get_capability_binding(session, "tts", user.role_id)
+    if binding is None:
+        return None
+    provider = binding.provider
+    if provider is None or not provider.enabled:
+        return None
+    kind = provider.kind
+    if kind == "test":
+        return _test_wav(), "audio/wav"
+    api_key = await resolve_ref(session, user, provider.api_key_ref)
+    if kind in ("openai", "openai-compatible"):
+        voice = str(binding.params.get("voice") or "alloy")
+        return await _openai_speech(
+            provider.base_url, binding.model, voice, api_key, text
+        )
+    log.warning("tts: provider kind %r unsupported", kind)
+    return None
+
+
+async def _openai_speech(
+    base_url: str | None,
+    model: str,
+    voice: str,
+    api_key: str | None,
+    text: str,
+) -> tuple[bytes, str]:
+    base = (base_url or "https://api.openai.com/v1").rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(
+            f"{base}/audio/speech",
+            json={
+                "model": model,
+                "input": text,
+                "voice": voice,
+                "response_format": "mp3",
+            },
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.content, "audio/mpeg"
+
+
+def _test_wav() -> bytes:
+    """0.25 s of silence — a valid wav for pipeline/UI tests."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * (16000 // 4))
+    return buf.getvalue()

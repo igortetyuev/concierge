@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
+import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
 import type { AttachmentOut, MessagePart } from '../lib/api'
+import { audioExt, pickAudioMime } from '../lib/audio'
 import { sendTyping } from '../lib/ws'
 import { sendParts, sendMessage } from '../store/messages'
+import { $composerPrefill } from '../store/ui'
 import { IconCamera, IconClose, IconMic, IconPaperclip, IconSend, IconStop } from './icons'
 
 const TYPING_INTERVAL = 3000
@@ -18,15 +21,6 @@ interface Staged {
   error: string | null
 }
 
-function pickMime(): string {
-  if (typeof MediaRecorder === 'undefined') return ''
-  const candidates = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', '']
-  for (const m of candidates) {
-    if (!m || MediaRecorder.isTypeSupported(m)) return m
-  }
-  return ''
-}
-
 export default function Composer({ convId }: { convId: number }) {
   const [text, setText] = useState('')
   const [staged, setStaged] = useState<Staged[]>([])
@@ -38,6 +32,7 @@ export default function Composer({ convId }: { convId: number }) {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const lastTyping = useRef(0)
+  const prefill = useStore($composerPrefill)
 
   function autoresize() {
     const el = areaRef.current
@@ -62,6 +57,18 @@ export default function Composer({ convId }: { convId: number }) {
     recorderRef.current?.stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // «Исправить и отправить заново» drops the transcript into the composer.
+  useEffect(() => {
+    if (!prefill || prefill.convId !== convId) return
+    $composerPrefill.set(null)
+    setText(prefill.text)
+    requestAnimationFrame(() => {
+      autoresize()
+      areaRef.current?.focus()
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill, convId])
 
   function onChange(value: string) {
     setText(value)
@@ -106,7 +113,7 @@ export default function Composer({ convId }: { convId: number }) {
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const rec = new MediaRecorder(stream, { mimeType: pickMime() || undefined })
+      const rec = new MediaRecorder(stream, { mimeType: pickAudioMime() || undefined })
       chunksRef.current = []
       rec.ondataavailable = (e) => {
         if (e.data.size) chunksRef.current.push(e.data)
@@ -114,7 +121,7 @@ export default function Composer({ convId }: { convId: number }) {
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        const ext = rec.mimeType?.includes('mp4') ? 'm4a' : 'webm'
+        const ext = audioExt(rec.mimeType || '')
         if (blob.size) stage(blob, `voice.${ext}`)
       }
       recorderRef.current = rec

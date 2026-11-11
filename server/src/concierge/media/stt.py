@@ -34,7 +34,9 @@ async def transcribe_audio(
         return None
     kind = provider.kind
     if kind == "test":
-        return str(binding.params.get("transcript") or "test transcript")
+        if "transcript" in binding.params:
+            return str(binding.params["transcript"])
+        return "test transcript"
     api_key = await resolve_ref(session, user, provider.api_key_ref)
     if kind == "deepgram":
         return await _deepgram(

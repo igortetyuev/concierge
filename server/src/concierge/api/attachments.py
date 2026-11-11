@@ -53,6 +53,24 @@ async def upload_attachment(
     return service.attachment_to_dict(att)
 
 
+@router.post("/attachments/{attachment_id}/retranscribe")
+async def retranscribe_attachment(
+    attachment_id: int, user: CurrentUser, session: SessionDep
+) -> dict[str, Any]:
+    """Reset derived state and run the pipeline again (STT retry)."""
+    from concierge.media.models import Attachment
+
+    att = await session.get(Attachment, attachment_id)
+    if att is None or not await service.can_access(session, att, user):
+        raise HTTPException(404, "attachment not found")
+    if service.kind_of(att.mime, att.original_name) not in ("audio", "video"):
+        raise HTTPException(400, "only audio/video can be transcribed")
+    att.derived = {"status": "pending"}
+    await session.commit()
+    get_pipeline().schedule(att.id)
+    return service.attachment_to_dict(att)
+
+
 @router.get("/attachments/{attachment_id}")
 async def get_attachment(
     attachment_id: int, user: CurrentUser, session: SessionDep

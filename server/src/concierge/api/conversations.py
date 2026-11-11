@@ -1,13 +1,22 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.agent.runtime import get_runtime
-from concierge.auth.dependencies import CurrentUser, SessionDep
+from concierge.auth.dependencies import CurrentUser, SessionDep, require
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
@@ -16,6 +25,7 @@ from concierge.conversations.models import Conversation, ConversationMember, Mes
 from concierge.media import service as media_service
 from concierge.media.models import Attachment
 from concierge.memory import indexer as memory_indexer
+from concierge.settings import service as settings_service
 
 router = APIRouter()
 
@@ -331,6 +341,170 @@ async def list_messages(
     conv = await _member_conv_or_404(session, conversation_id, user)
     rows = await service.list_messages(session, conv.id, before_seq, limit)
     return await _messages_out(session, rows)
+
+
+VOICE_QUICK_MIN_CHARS_DEFAULT = 2
+VOICE_QUICK_TITLE_MAX = 48
+
+
+class VoiceQuickOut(BaseModel):
+    status: Literal["ok", "empty_transcript", "stt_failed"]
+    conversation_id: int | None = None
+    message_id: int | None = None
+    transcript: str | None = None
+
+
+async def _fanout_new(
+    session: AsyncSession, conv: Conversation, user: User, msgs: list[Message]
+) -> None:
+    """Push a freshly created session + its messages to the owner's devices.
+
+    Recipients aren't subscribed to the new conversation yet, so events go by
+    user, not by subscription.
+    """
+    hub = get_hub()
+    conv_out = await _conv_out(session, conv)
+    await hub.publish_users(
+        {user.id},
+        ChannelEvent(
+            "conversation.updated",
+            conv.id,
+            {"conversation": conv_out.model_dump(mode="json")},
+        ),
+    )
+    for out in await _messages_out(session, msgs):
+        await hub.publish_users(
+            {user.id},
+            ChannelEvent(
+                "message.created", conv.id, {"message": out.model_dump(mode="json")}
+            ),
+        )
+
+
+@router.post("/conversations/voice-quick")
+async def voice_quick(
+    user: Annotated[User, Depends(require("voice_quick_session"))],
+    session: SessionDep,
+    file: Annotated[UploadFile | None, File()] = None,
+    attachment_id: Annotated[int | None, Form()] = None,
+) -> VoiceQuickOut:
+    """One-tap voice session: audio -> STT -> new personal session + run."""
+    if (file is None) == (attachment_id is None):
+        raise HTTPException(400, "provide either file or attachment_id")
+
+    existing: Attachment | None = None
+    upload: tuple[str, str, bytes] | None = None
+    if attachment_id is not None:
+        existing = await session.get(Attachment, attachment_id)
+        if existing is None or existing.uploaded_by != user.id:
+            raise HTTPException(404, "attachment not found")
+        if media_service.kind_of(existing.mime, existing.original_name) != "audio":
+            raise HTTPException(400, "attachment is not audio")
+    else:
+        assert file is not None
+        max_bytes = media_service.max_upload_bytes(user)
+        if max_bytes <= 0:
+            raise HTTPException(403, "uploads are not allowed for this role")
+        data = await file.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise HTTPException(
+                413,
+                f"file exceeds the {max_bytes // (1024 * 1024)} MB upload limit",
+            )
+        if not data:
+            raise HTTPException(400, "empty file")
+        name = file.filename or "voice"
+        mime = file.content_type or "application/octet-stream"
+        if media_service.kind_of(mime, name) != "audio":
+            raise HTTPException(400, "voice-quick accepts audio only")
+        upload = (name, mime, data)
+
+    conv = await service.create_conversation(
+        session, user, "personal", "", [], origin="voice_quick"
+    )
+    assert conv is not None
+    if existing is not None:
+        att = existing
+        await media_service.bind_to_conversation(session, att, conv.id)
+    else:
+        assert upload is not None
+        att, _ = await media_service.create_attachment(
+            session, user, upload[0], upload[1], upload[2], conv.id
+        )
+
+    transcript = (await media_service.transcribe(att.id)).strip()
+    await session.refresh(att)
+
+    if att.derived.get("status") != "done":
+        # STT unavailable/failed: keep the session with the raw audio and a
+        # system notice; the client can retry recognition in place.
+        parts = [
+            {
+                "type": "audio",
+                "attachment_id": att.id,
+                "name": att.original_name,
+                "mime": att.mime,
+            }
+        ]
+        msg, _ = await service.post_message(session, conv, user, parts, None)
+        notice = await service.post_system_message(
+            session,
+            conv,
+            [
+                {
+                    "type": "text",
+                    "text": "Ошибка распознавания речи. Нажмите «Повторить» "
+                    "под записью.",
+                }
+            ],
+        )
+        await _fanout_new(session, conv, user, [msg, notice])
+        return VoiceQuickOut(
+            status="stt_failed", conversation_id=conv.id, message_id=msg.id
+        )
+
+    min_chars = int(
+        await settings_service.get_value(
+            session,
+            user,
+            "voice_quick.min_transcript_chars",
+            VOICE_QUICK_MIN_CHARS_DEFAULT,
+        )
+        or VOICE_QUICK_MIN_CHARS_DEFAULT
+    )
+    if len(transcript) < min_chars:
+        att.conversation_id = None
+        await session.delete(conv)
+        await session.commit()
+        return VoiceQuickOut(
+            status="empty_transcript", transcript=transcript or None
+        )
+
+    parts = [
+        {"type": "text", "text": transcript, "transcribed": True},
+        {
+            "type": "audio",
+            "attachment_id": att.id,
+            "name": att.original_name,
+            "mime": att.mime,
+        },
+    ]
+    msg, _ = await service.post_message(session, conv, user, parts, None)
+    if len(transcript) <= VOICE_QUICK_TITLE_MAX:
+        # Short request: the transcript itself is the title; longer ones get
+        # a chat_fast-generated title after the run (runtime._ensure_title).
+        conv = await service.update_conversation(
+            session, conv, title=transcript.split("\n", 1)[0].strip()
+        )
+    await _fanout_new(session, conv, user, [msg])
+    memory_indexer.kick()
+    get_runtime().schedule(conv.id, msg.id)
+    return VoiceQuickOut(
+        status="ok",
+        conversation_id=conv.id,
+        message_id=msg.id,
+        transcript=transcript,
+    )
 
 
 class MarkReadBody(BaseModel):

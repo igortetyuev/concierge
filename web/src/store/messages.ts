@@ -28,6 +28,8 @@ export const $hasMore = atom<Record<number, boolean>>({})
 export const $loadingMore = atom<Record<number, boolean>>({})
 export const $pending = atom<Record<number, PendingMessage[]>>({})
 export const $streams = atom<Record<number, Record<number, StreamState>>>({})
+/** conversation_id -> message id of the latest live tts reply (autoplay once). */
+export const $ttsAutoplay = atom<Record<number, number>>({})
 
 function patch<T>(store: { get(): Record<number, T>; set(v: Record<number, T>): void }, id: number, value: T): void {
   store.set({ ...store.get(), [id]: value })
@@ -72,6 +74,9 @@ export function applyMessageCreated(message: MessageOut): void {
     convId,
     mergeSorted($messages.get()[convId] ?? [], [message]),
   )
+  if (message.parts.some((p) => p.tts === true)) {
+    patch($ttsAutoplay, convId, message.id)
+  }
   if (message.client_msg_id) {
     const pending = ($pending.get()[convId] ?? []).filter(
       (p) => p.client_msg_id !== message.client_msg_id,

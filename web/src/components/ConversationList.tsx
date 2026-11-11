@@ -17,6 +17,7 @@ import {
 } from '../store/conversations'
 import { messageText } from '../store/messages'
 import NewGroupDialog from './NewGroupDialog'
+import VoiceQuick from './VoiceQuick'
 import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconUsers } from './icons'
 
 export default function ConversationList() {
@@ -87,6 +88,7 @@ export default function ConversationList() {
         >
           <IconBook />
         </Link>
+        <VoiceQuick />
       </header>
 
       <div className="convlist-search">

@@ -208,8 +208,9 @@ async def post_assistant_message(
     conv: Conversation,
     parts: list[dict[str, Any]],
     run_id: int | None,
+    author_kind: str = "assistant",
 ) -> Message:
-    """Append an assistant (or tool) message produced by an agent run."""
+    """Append an assistant/system message produced by the server."""
     await session.execute(
         select(Conversation.id)
         .where(Conversation.id == conv.id)
@@ -225,7 +226,7 @@ async def post_assistant_message(
     msg = Message(
         conversation_id=conv.id,
         seq=next_seq,
-        author_kind="assistant",
+        author_kind=author_kind,
         author_id=None,
         parts=parts,
         run_id=run_id,
@@ -235,6 +236,13 @@ async def post_assistant_message(
     await session.commit()
     await session.refresh(msg)
     return msg
+
+
+async def post_system_message(
+    session: AsyncSession, conv: Conversation, parts: list[dict[str, Any]]
+) -> Message:
+    """Append a system notice (e.g. STT failure) — not an agent reply."""
+    return await post_assistant_message(session, conv, parts, None, "system")
 
 
 async def list_messages(

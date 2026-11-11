@@ -120,8 +120,10 @@ class MediaPipeline:
                 src = _stage(data, tmp, att.original_name)
                 wav = await _to_wav(src, Path(tmp) / "audio.wav")
                 transcript = await stt.transcribe_audio(session, user, wav)
+                if transcript is None:
+                    raise MediaSkippedError("no stt provider bound")
                 return {
-                    "transcript": transcript or "",
+                    "transcript": transcript,
                     "duration_s": await _duration(src),
                 }
         if kind == "video":

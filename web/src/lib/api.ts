@@ -76,6 +76,13 @@ export interface AttachmentOut {
   created_at: string | null
 }
 
+export interface VoiceQuickOut {
+  status: 'ok' | 'empty_transcript' | 'stt_failed'
+  conversation_id: number | null
+  message_id: number | null
+  transcript: string | null
+}
+
 export interface MemoryItemOut {
   id: number
   scope: 'user' | 'family'
@@ -280,6 +287,20 @@ export const apiClient = {
     if (conversationId != null) form.append('conversation_id', String(conversationId))
     return api<AttachmentOut>('/attachments', { method: 'POST', body: form })
   },
+  retranscribe: (attachmentId: number) =>
+    api<AttachmentOut>(`/attachments/${attachmentId}/retranscribe`, { method: 'POST' }),
+  voiceQuick: (file: Blob, name: string) => {
+    const form = new FormData()
+    form.append('file', file, name)
+    return api<VoiceQuickOut>('/conversations/voice-quick', { method: 'POST', body: form })
+  },
+  listUserSettings: () => api<Record<string, unknown>>('/settings/user'),
+  putUserSetting: (key: string, value: unknown) =>
+    api<{ ok: boolean }>('/settings/user', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    }),
   search: (q: string, limit = 20) =>
     api<MessageOut[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 
