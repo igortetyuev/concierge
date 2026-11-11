@@ -59,6 +59,20 @@ function remarkMentions(re: RegExp | null) {
   }
 }
 
+// remark-math understands only $...$/$$...$$ — models often emit \(\)/\[...\].
+function normalizeMathDelims(text: string): string {
+  const chunks = text.split(/(`{3,}[\s\S]*?(?:`{3,}|$)|`[^`\n]*`)/g)
+  return chunks
+    .map((chunk) =>
+      chunk.startsWith('`')
+        ? chunk
+        : chunk
+            .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
+            .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => `$${inner}$`)
+    )
+    .join('')
+}
+
 export default function Markdown({
   text,
   mentions,
@@ -73,7 +87,7 @@ export default function Markdown({
         remarkPlugins={[remarkGfm, remarkMath, remarkMentions(re)]}
         rehypePlugins={[rehypeKatex]}
       >
-        {text}
+        {normalizeMathDelims(text)}
       </ReactMarkdown>
     </div>
   )
