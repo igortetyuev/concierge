@@ -7,6 +7,7 @@ import type { AttachmentOut, MessagePart } from '../lib/api'
 import { audioExt, pickAudioMime } from '../lib/audio'
 import { initials } from '../lib/format'
 import { mentionRegex } from '../lib/mentions'
+import { uuid } from '../lib/uuid'
 import { loadPromptHistory, pushPromptHistory } from '../lib/promptHistory'
 import { sendTyping } from '../lib/ws'
 import { $conversations } from '../store/conversations'
@@ -169,7 +170,7 @@ export default function Composer({ convId }: { convId: number }) {
   }
 
   function stage(file: File | Blob, name: string) {
-    const key = crypto.randomUUID()
+    const key = uuid()
     const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
     const entry: Staged = { key, name, previewUrl, attachment: null, error: null }
     setStaged((list) => [...list, entry])

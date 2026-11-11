@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { apiClient } from '../lib/api'
 import type { MessageOut, MessagePart } from '../lib/api'
+import { uuid } from '../lib/uuid'
 
 export interface PendingMessage {
   client_msg_id: string
@@ -103,7 +104,7 @@ export async function sendParts(
   previewText: string,
 ): Promise<void> {
   if (!parts.length) return
-  const clientMsgId = crypto.randomUUID()
+  const clientMsgId = uuid()
   const entry: PendingMessage = { client_msg_id: clientMsgId, text: previewText, failed: false }
   patch($pending, conversationId, [...($pending.get()[conversationId] ?? []), entry])
   try {
