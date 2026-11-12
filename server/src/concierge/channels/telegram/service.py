@@ -136,6 +136,21 @@ def hash_link_code(code: str) -> str:
     return hashlib.sha256(code.strip().encode()).hexdigest()
 
 
+async def notify_user_dm(user_id: int, text: str) -> None:
+    """DM a linked user through the live gateway; no-op when unlinked/off."""
+    async with get_sessionmaker()() as session:
+        link = (
+            await session.execute(
+                select(TelegramLink).where(TelegramLink.user_id == user_id)
+            )
+        ).scalar_one_or_none()
+    if link is None:
+        return
+    from concierge.channels.telegram import gateway
+
+    await gateway.notify_user_dm(link.telegram_user_id, text)
+
+
 class TelegramService:
     def __init__(
         self, outbox: TelegramOutbox, on_binding_changed: BindingChanged

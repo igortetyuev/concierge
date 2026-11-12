@@ -34,9 +34,20 @@ import type { PendingMessage, StreamState } from '../store/messages'
 import { markLatestRead } from '../store/realtime'
 import { $detailsOpen } from '../store/ui'
 import Composer from './Composer'
+import ForwardDialog from './ForwardDialog'
 import MessageParts, { CopyButton, ToolChip } from './MessageParts'
 import Markdown from './Markdown'
-import { IconBack, IconDown, IconInfo, IconRetry, IconTrash } from './icons'
+import {
+  IconBack,
+  IconCheck,
+  IconCheckAll,
+  IconClose,
+  IconDown,
+  IconForward,
+  IconInfo,
+  IconRetry,
+  IconTrash,
+} from './icons'
 
 const EMPTY_MSGS: MessageOut[] = []
 const EMPTY_PENDING: PendingMessage[] = []
@@ -190,9 +201,15 @@ export default function ChatView({ convId }: { convId: number }) {
   const pendingAdjust = useRef<number | null>(null)
   const [showJump, setShowJump] = useState(false)
   const [, setTick] = useState(0)
+  const [selecting, setSelecting] = useState(false)
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const [forwardOpen, setForwardOpen] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
 
   useEffect(() => {
     $activeId.set(convId)
+    setSelecting(false)
+    setPicked(new Set())
     void refreshConversation(convId)
     void loadInitial(convId).then(() => markLatestRead(convId))
     return () => $activeId.set(null)
@@ -264,6 +281,44 @@ export default function ChatView({ convId }: { convId: number }) {
     }
   }
 
+  function togglePick(id: number): void {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function exitSelect(): void {
+    setSelecting(false)
+    setPicked(new Set())
+    setForwardOpen(false)
+  }
+
+  async function onDeletePicked(): Promise<void> {
+    const ids = msgs.filter((m) => picked.has(m.id)).map((m) => m.id)
+    if (!ids.length || actionBusy) return
+    if (!window.confirm(`Удалить сообщений: ${ids.length}?`)) return
+    setActionBusy(true)
+    let failed = 0
+    for (const id of ids) {
+      try {
+        await deleteMessage(convId, id)
+      } catch {
+        failed += 1
+      }
+    }
+    setActionBusy(false)
+    exitSelect()
+    if (failed) window.alert(`Не удалось удалить: ${failed}`)
+  }
+
+  function onForwarded(targetConvId: number): void {
+    exitSelect()
+    navigate(`/c/${targetConvId}`)
+  }
+
   const typing = typingUsers(convId).filter((id) => id !== me?.id)
   const onlineOthers = online.filter((id) => id !== me?.id)
   const streamList = Object.values(streams).sort((a, b) => a.runId - b.runId)
@@ -298,6 +353,16 @@ export default function ChatView({ convId }: { convId: number }) {
                   : ''}
           </div>
         </div>
+        {msgs.length > 0 && (
+          <button
+            className="icon-btn"
+            onClick={() => (selecting ? exitSelect() : setSelecting(true))}
+            aria-label="Выбрать сообщения"
+            title={selecting ? 'Отменить выбор' : 'Выбрать сообщения'}
+          >
+            {selecting ? <IconClose /> : <IconCheckAll />}
+          </button>
+        )}
         <button
           className="icon-btn"
           onClick={() => $detailsOpen.set(!$detailsOpen.get())}
@@ -322,7 +387,8 @@ export default function ChatView({ convId }: { convId: number }) {
             !isSameDay(new Date(m.created_at ?? 0), new Date(prev.created_at ?? 0))
           const own = m.author_id != null && m.author_id === me?.id
           const canDel = own || canManage
-          const delBtn = canDel && (
+          const isPicked = picked.has(m.id)
+          const delBtn = canDel && !selecting && (
             <button
               className="msg-del"
               onClick={() => void onDeleteMessage(m)}
@@ -332,12 +398,24 @@ export default function ChatView({ convId }: { convId: number }) {
               <IconTrash size={15} />
             </button>
           )
+          const check = selecting && (
+            <span className="msg-check" aria-hidden="true">
+              <IconCheck size={13} />
+            </span>
+          )
           if (m.author_kind === 'system') {
             return (
               <div key={m.id}>
                 {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
-                <SwipeRow enabled={canDel} onDelete={() => void onDeleteMessage(m)}>
-                  <div className="msg sys">
+                <SwipeRow
+                  enabled={canDel && !selecting}
+                  onDelete={() => void onDeleteMessage(m)}
+                >
+                  <div
+                    className={`msg sys${selecting ? ' sel' : ''}${isPicked ? ' picked' : ''}`}
+                    onClick={selecting ? () => togglePick(m.id) : undefined}
+                  >
+                    {check}
                     <span className="sys-note muted">
                       <MessageParts
                         parts={m.parts}
@@ -355,8 +433,15 @@ export default function ChatView({ convId }: { convId: number }) {
           return (
             <div key={m.id}>
               {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
-              <SwipeRow enabled={canDel} onDelete={() => void onDeleteMessage(m)}>
-                <div className={`msg${own ? ' own' : ''}${m.author_kind === 'assistant' ? ' bot' : ''}`}>
+              <SwipeRow
+                enabled={canDel && !selecting}
+                onDelete={() => void onDeleteMessage(m)}
+              >
+                <div
+                  className={`msg${own ? ' own' : ''}${m.author_kind === 'assistant' ? ' bot' : ''}${selecting ? ' sel' : ''}${isPicked ? ' picked' : ''}`}
+                  onClick={selecting ? () => togglePick(m.id) : undefined}
+                >
+                  {check}
                   {!own && conv?.kind === 'group' && (
                     <span className="avatar small">{initials(authorName(m.author_id))}</span>
                   )}
@@ -452,7 +537,29 @@ export default function ChatView({ convId }: { convId: number }) {
         </button>
       )}
 
-      {deleted ? (
+      {selecting ? (
+        <div className="composer select-bar">
+          <span className="select-count muted">Выбрано: {picked.size}</span>
+          <button
+            className="icon-btn"
+            disabled={picked.size === 0 || actionBusy}
+            onClick={() => setForwardOpen(true)}
+            aria-label="Переслать"
+            title="Переслать"
+          >
+            <IconForward />
+          </button>
+          <button
+            className="icon-btn danger"
+            disabled={picked.size === 0 || actionBusy}
+            onClick={() => void onDeletePicked()}
+            aria-label="Удалить выбранные"
+            title="Удалить выбранные"
+          >
+            <IconTrash />
+          </button>
+        </div>
+      ) : deleted ? (
         <div className="composer archived-notice">
           <span className="muted">Сессия удалена</span>
         </div>
@@ -470,6 +577,16 @@ export default function ChatView({ convId }: { convId: number }) {
         </div>
       ) : (
         <Composer convId={convId} />
+      )}
+
+      {forwardOpen && (
+        <ForwardDialog
+          convId={convId}
+          messageIds={msgs.filter((m) => picked.has(m.id)).map((m) => m.id)}
+          excludeUserIds={new Set((conv?.members ?? []).map((m) => m.user_id))}
+          onClose={() => setForwardOpen(false)}
+          onDone={onForwarded}
+        />
       )}
     </div>
   )

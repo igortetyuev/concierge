@@ -13,6 +13,7 @@ from concierge.conversations.models import (
     Run,
 )
 from concierge.core.db import utcnow
+from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
 
 
@@ -164,6 +165,170 @@ async def add_members(
     await session.refresh(conv)
     await session.refresh(conv, ["members"])
     return sorted(wanted)
+
+
+async def find_direct_conversation(
+    session: AsyncSession, user_a: int, user_b: int
+) -> Conversation | None:
+    """Latest active conversation whose members are exactly {user_a, user_b}.
+
+    Used by the agent's forward tool as the "DM" between two users.
+    """
+    a_convs = (
+        select(ConversationMember.conversation_id)
+        .where(ConversationMember.user_id == user_a)
+        .scalar_subquery()
+    )
+    shared_ids = (
+        (
+            await session.execute(
+                select(ConversationMember.conversation_id).where(
+                    ConversationMember.user_id == user_b,
+                    ConversationMember.conversation_id.in_(a_convs),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not shared_ids:
+        return None
+    rows = (
+        (
+            await session.execute(
+                select(Conversation)
+                .where(
+                    Conversation.id.in_(shared_ids),
+                    Conversation.status == "active",
+                )
+                .order_by(Conversation.updated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for conv in rows:
+        if {m.user_id for m in conv.members} == {user_a, user_b}:
+            return conv
+    return None
+
+
+_FORWARD_MEDIA_TYPES = ("image", "audio", "video", "document")
+
+
+def _part_attachment_id(part: dict[str, Any]) -> int | None:
+    raw = part.get("attachment_id")
+    return raw if isinstance(raw, int) else None
+
+
+async def _copy_media_part(
+    session: AsyncSession, part: dict[str, Any], conv_id: int
+) -> dict[str, Any] | None:
+    """Re-home an attachment part into the target conversation.
+
+    Members can only read attachments bound to their own conversation, so a
+    forwarded media part needs a new row pointing at the same blob.
+    """
+    aid = _part_attachment_id(part)
+    if aid is None:
+        return None
+    src = await session.get(Attachment, aid)
+    if src is None:
+        return None
+    att = Attachment(
+        sha256=src.sha256,
+        mime=src.mime,
+        size=src.size,
+        original_name=src.original_name,
+        uploaded_by=src.uploaded_by,
+        conversation_id=conv_id,
+        derived=dict(src.derived),
+    )
+    session.add(att)
+    await session.flush()
+    return {**part, "attachment_id": att.id, "forwarded": True}
+
+
+async def _forward_parts(
+    session: AsyncSession,
+    msg: Message,
+    names: dict[int, str],
+    target_conv_id: int,
+) -> list[dict[str, Any]]:
+    """Parts for a forwarded copy of `msg`, marked with forwarded=True."""
+    author = (
+        names.get(msg.author_id)
+        if msg.author_id is not None
+        else ("Консьерж" if msg.author_kind == "assistant" else None)
+    ) or "?"
+    text = "\n".join(
+        str(p.get("text", ""))
+        for p in msg.parts
+        if p.get("type") == "text"
+    ).strip()
+    header = f"Переслано от {author}:"
+    media_parts = [
+        p
+        for p in msg.parts
+        if p.get("type") in _FORWARD_MEDIA_TYPES
+        and _part_attachment_id(p) is not None
+    ]
+    if not text and not media_parts:
+        return []  # mention/tool/compaction-only messages carry nothing
+    parts: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": f"{header}\n{text}" if text else header,
+            "forwarded": True,
+        }
+    ]
+    for p in media_parts:
+        copied = await _copy_media_part(session, p, target_conv_id)
+        if copied is not None:
+            parts.append(copied)
+    return parts
+
+
+async def forward_to_user(
+    session: AsyncSession,
+    requester: User,
+    target: User,
+    messages: list[Message],
+) -> tuple[Conversation, list[Message]]:
+    """Copy `messages` into the direct requester<->target conversation.
+
+    Returns (target_conv, posted messages). The target is the active session
+    whose members are exactly the two users, created on first use.
+    """
+    target_conv = await find_direct_conversation(
+        session, requester.id, target.id
+    )
+    if target_conv is None:
+        target_conv = await create_conversation(
+            session, requester, "group", "", [target.id]
+        )
+        assert target_conv is not None
+    author_ids = {m.author_id for m in messages if m.author_id is not None}
+    names: dict[int, str] = {}
+    if author_ids:
+        names = {
+            uid: name
+            for uid, name in (
+                await session.execute(
+                    select(User.id, User.display_name).where(
+                        User.id.in_(author_ids)
+                    )
+                )
+            ).all()
+        }
+    out: list[Message] = []
+    for m in messages:
+        parts = await _forward_parts(session, m, names, target_conv.id)
+        if not parts:
+            continue
+        msg, _ = await post_message(session, target_conv, requester, parts, None)
+        out.append(msg)
+    return target_conv, out
 
 
 async def remove_member(

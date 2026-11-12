@@ -439,6 +439,11 @@ export const apiClient = {
     api<{ ok: boolean }>(`/conversations/${id}/messages/${messageId}`, {
       method: 'DELETE',
     }),
+  forwardMessages: (id: number, userId: number, messageIds: number[]) =>
+    post<{ conversation_id: number; forwarded: number }>(
+      `/conversations/${id}/messages/forward`,
+      { user_id: userId, message_ids: messageIds },
+    ),
   markRead: (id: number, seq: number) =>
     post<{ last_read_seq: number }>(`/conversations/${id}/read`, { seq }),
 

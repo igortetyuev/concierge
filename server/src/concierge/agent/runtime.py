@@ -173,7 +173,11 @@ class AgentRuntime:
             history = prefix + self._build_history(
                 history_rows, conv, member_names, atts
             )
-            deps = ToolDeps(user_id=user.id, conversation_id=conv.id)
+            deps = ToolDeps(
+                user_id=user.id,
+                conversation_id=conv.id,
+                trigger_seq=trigger.seq,
+            )
 
             run = Run(
                 conversation_id=conv.id,

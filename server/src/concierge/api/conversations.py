@@ -23,6 +23,7 @@ from concierge.auth.dependencies import CurrentUser, SessionDep, require
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
+from concierge.channels.telegram import service as telegram_service
 from concierge.conversations import service
 from concierge.conversations.models import Conversation, ConversationMember, Message
 from concierge.core import audit
@@ -304,6 +305,81 @@ async def delete_conversation(
         )
     )
     return {"ok": True}
+
+
+class ForwardMessagesBody(BaseModel):
+    user_id: int
+    message_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+@router.post("/conversations/{conversation_id}/messages/forward", status_code=201)
+async def forward_messages(
+    conversation_id: int,
+    body: ForwardMessagesBody,
+    user: CurrentUser,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Copy selected messages into the direct session with another user."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    target = await session.get(User, body.user_id)
+    if target is None or not target.is_active:
+        raise HTTPException(404, "user not found")
+    if target.id == user.id:
+        raise HTTPException(400, "cannot forward to yourself")
+    if target.id in {m.user_id for m in conv.members}:
+        raise HTTPException(409, "user is already in this conversation")
+    rows = list(
+        (
+            await session.execute(
+                select(Message)
+                .where(
+                    Message.conversation_id == conv.id,
+                    Message.id.in_(body.message_ids),
+                    Message.author_kind.in_(("user", "assistant")),
+                )
+                .order_by(Message.seq)
+            )
+        ).scalars()
+    )
+    if not rows:
+        raise HTTPException(404, "no forwardable messages")
+    target_conv, delivered = await service.forward_to_user(
+        session, user, target, rows
+    )
+    outs = await _messages_out(session, delivered)
+    hub = get_hub()
+    await hub.publish_users(
+        {user.id, target.id},
+        ChannelEvent(
+            "conversation.updated",
+            target_conv.id,
+            {"conversation": {"id": target_conv.id}},
+        ),
+    )
+    for o in outs:
+        await hub.publish_users(
+            {user.id, target.id},
+            ChannelEvent(
+                "message.created",
+                target_conv.id,
+                {"message": o.model_dump(mode="json")},
+            ),
+        )
+    preview = "\n".join(
+        str(p.get("text", ""))
+        for p in rows[-1].parts
+        if p.get("type") == "text"
+    ).strip()[:200]
+    try:
+        await telegram_service.notify_user_dm(
+            target.id, f"Переслано от {user.display_name}: {preview}"
+        )
+    except Exception:
+        log.debug("forward dm notify failed user=%s", target.id)
+    return {
+        "conversation_id": target_conv.id,
+        "forwarded": len(delivered),
+    }
 
 
 class AddMembersBody(BaseModel):

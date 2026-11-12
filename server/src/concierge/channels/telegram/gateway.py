@@ -426,3 +426,18 @@ async def binding_dropped(chat_id: int, thread_id: int) -> None:
     """API-side binding removal (unlink/archive) reaches the live gateway."""
     if _gateway is not None:
         await _gateway._binding_changed(chat_id, thread_id, None)
+
+
+async def notify_user_dm(telegram_user_id: int, text: str) -> None:
+    """Best-effort DM to a linked user through the running gateway.
+
+    In private chats chat_id equals the telegram user id. No-op when the
+    bot is off; delivery errors are swallowed.
+    """
+    gw = _gateway
+    if gw is None or gw._outbox is None:
+        return
+    try:
+        await gw._outbox.send(telegram_user_id, text, thread_id=0)
+    except Exception:
+        log.debug("dm notify failed tg_user=%s", telegram_user_id)

@@ -1,11 +1,12 @@
 import asyncio
 import sys
 from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 from pydantic_ai.messages import ModelRequest, UserPromptPart
-from sqlalchemy import select
+from sqlalchemy import func, select
 from starlette.testclient import TestClient
 
 from concierge.agent.models import (
@@ -17,7 +18,7 @@ from concierge.agent.models import (
 from concierge.agent.providers import get_model
 from concierge.agent.runtime import get_runtime
 from concierge.api.app import create_app
-from concierge.auth.models import Role
+from concierge.auth.models import Role, User
 from concierge.conversations.models import Conversation, Message, Run
 from concierge.core import db
 from tests.conftest import auth, login, make_user
@@ -760,3 +761,228 @@ async def test_run_persists_tool_calls_and_compacts(
     assert isinstance(hist[0], ModelRequest)
     assert isinstance(hist[0].parts[0], UserPromptPart)
     assert "Контекст сжат автоматически" in str(hist[0].parts[0].content)
+
+
+async def test_invite_member_tool(engine) -> None:
+    from types import SimpleNamespace
+
+    from concierge.agent.tools import ToolDeps, invite_member
+    from concierge.conversations import service as conv_service
+    from concierge.conversations.models import ConversationMember
+
+    alice = await make_user("alice_i", "adult")
+    tikhon = await make_user("tikhon", "adult")
+    async with db.get_sessionmaker()() as session:
+        conv = await conv_service.create_conversation(
+            session, alice, "personal", "", []
+        )
+        assert conv is not None
+        conv_id = conv.id
+    ctx = SimpleNamespace(
+        deps=ToolDeps(user_id=alice.id, conversation_id=conv_id)
+    )
+
+    res = await invite_member(ctx, "Tikhon")  # type: ignore[arg-type]
+    assert res == {
+        "ok": True,
+        "user": tikhon.display_name,
+        "conversation_id": conv_id,
+    }
+    async with db.get_sessionmaker()() as session:
+        member = await session.get(ConversationMember, (conv_id, tikhon.id))
+        assert member is not None
+        conv = await session.get(Conversation, conv_id)
+        assert conv is not None
+        assert conv.kind == "group"
+        notice = (
+            await session.execute(
+                select(Message).where(
+                    Message.conversation_id == conv_id,
+                    Message.author_kind == "system",
+                )
+            )
+        ).scalar_one()
+    assert tikhon.display_name in str(notice.parts[0]["text"])
+
+    res = await invite_member(ctx, "Tikhon")  # type: ignore[arg-type]
+    assert res.get("already_member") is True
+
+    res = await invite_member(ctx, "Nobody")  # type: ignore[arg-type]
+    assert "error" in res and res["candidates"] == []
+
+
+async def test_resolve_user_ambiguous(engine) -> None:
+    from concierge.agent.tools import _resolve_user
+
+    await make_user("nastya_a", "adult")
+    await make_user("nastya_b", "adult")
+    async with db.get_sessionmaker()() as session:
+        user, candidates = await _resolve_user(session, "nastya")
+        assert user is None
+        assert len(candidates) == 2
+        user, candidates = await _resolve_user(session, "nastya_a")
+        assert user is not None and user.username == "nastya_a"
+
+
+async def test_forward_messages_tool(engine) -> None:
+    from types import SimpleNamespace
+
+    from concierge.agent.tools import ToolDeps, forward_messages
+    from concierge.conversations import service as conv_service
+
+    alice = await make_user("alice_f", "adult")
+    await make_user("nastya", "adult")
+    async with db.get_sessionmaker()() as session:
+        conv = await conv_service.create_conversation(
+            session, alice, "personal", "", []
+        )
+        assert conv is not None
+        conv_id = conv.id
+        await conv_service.post_message(
+            session, conv, alice, [{"type": "text", "text": "первое"}], None
+        )
+        await conv_service.post_message(
+            session, conv, alice, [{"type": "text", "text": "второе"}], None
+        )
+        trigger, _ = await conv_service.post_message(
+            session,
+            conv,
+            alice,
+            [{"type": "text", "text": "перешли это Насте"}],
+            None,
+        )
+        trigger_seq = trigger.seq
+    ctx = SimpleNamespace(
+        deps=ToolDeps(
+            user_id=alice.id,
+            conversation_id=conv_id,
+            trigger_seq=trigger_seq,
+        )
+    )
+
+    res = await forward_messages(ctx, "Nastya")  # type: ignore[arg-type]
+    assert res["ok"] is True
+    assert res["forwarded"] == 1
+    target_id = res["conversation_id"]
+    assert target_id != conv_id
+
+    async with db.get_sessionmaker()() as session:
+        target = await session.get(Conversation, target_id)
+        assert target is not None
+        assert target.kind == "group"
+        nastya_id = (
+            await session.execute(
+                select(User.id).where(User.username == "nastya")
+            )
+        ).scalar_one()
+        assert {m.user_id for m in target.members} == {alice.id, nastya_id}
+        msgs = list(
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == target_id)
+                    .order_by(Message.seq)
+                )
+            ).scalars()
+        )
+    assert len(msgs) == 1
+    assert msgs[0].author_id == alice.id
+    part = msgs[0].parts[0]
+    assert part["type"] == "text" and part["forwarded"] is True
+    assert "Переслано от" in part["text"] and "второе" in part["text"]
+
+    # A second forward lands in the same direct session.
+    res = await forward_messages(ctx, "Nastya", count=2)  # type: ignore[arg-type]
+    assert res["conversation_id"] == target_id
+    assert res["forwarded"] == 2
+    async with db.get_sessionmaker()() as session:
+        n = (
+            await session.execute(
+                select(func.count(Message.id)).where(
+                    Message.conversation_id == target_id
+                )
+            )
+        ).scalar_one()
+    assert n == 3
+
+    # Recipient already in the conversation -> no copy is made.
+    async with db.get_sessionmaker()() as session:
+        await conv_service.add_members(
+            session, await session.get(Conversation, conv_id), [nastya_id]  # type: ignore[arg-type]
+        )
+    res = await forward_messages(ctx, "Nastya")  # type: ignore[arg-type]
+    assert res.get("already_member") is True
+
+
+async def test_forward_messages_gap_tail(engine) -> None:
+    from datetime import timedelta as _td
+    from types import SimpleNamespace
+
+    from concierge.agent.tools import ToolDeps, forward_messages
+    from concierge.conversations import service as conv_service
+
+    alice = await make_user("alice_g", "adult")
+    await make_user("tikhon_g", "adult")
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    async with db.get_sessionmaker()() as session:
+        conv = await conv_service.create_conversation(
+            session, alice, "personal", "", []
+        )
+        assert conv is not None
+        conv_id = conv.id
+        stamps = [
+            base,  # old
+            base + _td(hours=1),  # +60min gap
+            base + _td(hours=1, minutes=10),
+            base + _td(hours=1, minutes=20),
+        ]
+        for i, ts in enumerate(stamps):
+            msg, _ = await conv_service.post_message(
+                session,
+                conv,
+                alice,
+                [{"type": "text", "text": f"msg{i}"}],
+                None,
+            )
+            msg.created_at = ts
+            await session.commit()
+        trigger, _ = await conv_service.post_message(
+            session,
+            conv,
+            alice,
+            [{"type": "text", "text": "перешли последние Тихону"}],
+            None,
+        )
+        trigger_seq = trigger.seq
+    ctx = SimpleNamespace(
+        deps=ToolDeps(
+            user_id=alice.id,
+            conversation_id=conv_id,
+            trigger_seq=trigger_seq,
+        )
+    )
+    # Pauses above 30 min cut the tail: only the last three messages go.
+    res = await forward_messages(  # type: ignore[arg-type]
+        ctx, "Tikhon_g", gap_minutes=30
+    )
+    assert res["ok"] is True and res["forwarded"] == 3
+    async with db.get_sessionmaker()() as session:
+        texts = [
+            str(p["text"])
+            for m in (
+                (
+                    await session.execute(
+                        select(Message).where(
+                            Message.conversation_id
+                            == res["conversation_id"]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for p in m.parts
+            if p["type"] == "text"
+        ]
+    assert not any("msg0" in t for t in texts)
+    assert all(any(f"msg{i}" in t for t in texts) for i in (1, 2, 3))

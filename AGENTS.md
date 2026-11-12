@@ -65,7 +65,13 @@ cwd `C:\Users\<user>\speaches-home`, лог `speaches.log`):
 `http://<win-host>:8000/v1`, whisper `large-v3-turbo` на CPU
 (алиас `whisper-1`), Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
 firewall-правило для порта 8000. Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
-только с неиспользуемыми aiortc/gradio).
+только с неиспользуемыми aiortc/gradio). В `run-speaches.ps1` выставлен
+`HF_HUB_OFFLINE=1`: faster-whisper при (пере)загрузке модели ходит на
+huggingface.co, и при отвалившейся связи запрос падал с 500; обе модели
+(whisper-1 → deepdml/faster-whisper-large-v3-turbo-ct2, tts-1 →
+speaches-ai/Kokoro-82M-v1.0-ONNX) есть в кэше `~/.cache/huggingface/hub`.
+Новые модели при offline-режиме не скачаются — качать вручную
+`snapshot_download` или временно убрать env.
 На сервере провайдер `speaches-lan` (kind `openai-compatible`, base_url
 `http://<win-host>:8000/v1`); capability `stt` привязана к нему как `whisper-1`
 (params `{"language": "ru"}`).
@@ -88,6 +94,27 @@ TODO: привязать capability `tts` → `speaches-lan`, model `tts-1` (п�
 ключ (неразрешимый ref считается литеральным ключом), модель
 `gpt://<folder_id>/aliceai-llm/latest`.
 
+## Приглашения и пересылка (инструменты агента)
+
+`invite_member` («Позови Тихона») — добавляет пользователя в текущую сессию
+(личная становится групповой), пишет системное «… добавлен в сессию» и шлёт
+`conversation.updated`/`message.created` подписчикам + DM-пинг в Telegram.
+`forward_messages` («Перешли это Насте», «Перешли последние сообщения Тихону»)
+— копирует сообщения перед триггером (`count` штук или хвост по `gap_minutes`)
+в личную сессию пары «просящий ↔ получатель» (ищется/создаётся как group из 2
+участников); текст идёт с шапкой «Переслано от …» и флагом `forwarded`,
+медиа-парты получают копию attachment, привязанную к целевой сессии (доступ
+к вложениям — по членству). Имена резолвятся по display_name/username
+(точное, затем префикс/слово; неоднозначность → список кандидатов). Оба
+инструмента — в `tools.allow/deny` роли.
+
+То же ядро (`service.forward_to_user`) обслуживает REST:
+`POST /conversations/{id}/messages/forward` (`{user_id, message_ids}`) —
+для ручной пересылки из PWA: в шапке чата кнопка выбора включает режим
+чекбоксов, нижняя панель даёт «Переслать» (диалог выбора получателя,
+участники текущей сессии скрыты — им уже видно) и «Удалить» (цикл по
+`DELETE /messages/{id}`).
+
 ## Лог сессии и компакшен
 
 Ответы ассистента хранят полный лог прогона: `thinking` (с provider-подписями
@@ -105,6 +132,51 @@ capability `chat` старые сообщения сворачиваются в 
 `max(input_tokens прошлого run, chars/4)`. Без `context_length` в params
 биндинга компакшен выключен. Задаётся в `/admin` → Провайдеры → params JSON
 биндинга, напр. `{"context_length": 128000}`.
+
+## Аналитическая БД (OLAP)
+
+`concierge_analytics` — отдельная БД на том же кластере PG14; агент получает к
+ней SQL-доступ через MCP-сервер `analytics` (таблица `mcp_servers`, stdio,
+`/srv/concierge/mcp/mcp_analytics/.venv/bin/mcp-analytics`; env из setting
+`mcp.env.analytics`). Сервер — свой проект `mcp_analytics` (uv + hatchling,
+заменил postgres-mcp): кроме read-only `query` даёт `import_rows` и
+`load_attachment` с записью в схему `sandbox`.
+
+Синхронизация из `concierge`: НЕ logical replication — на ALT-сборке нет
+`pgoutput` (проверено: rpm postgresql14/15-server его не содержит, chDB не
+работает на Celeron N4100 — нет AVX). Вместо этого postgres_fdw: схема `src`
+(foreign tables), `concierge_fdw_ro` — read-only роль источника, user mapping
+на владельца `analytics`. Каждую минуту `concierge-analytics-sync.timer`
+(`/srv/concierge/scripts/analytics-sync.sql`) прогоняет
+`sync_from_src(public.t, src.t)` — upsert по PK + анти-join delete
+(generated-колонки типа `messages.tsv` пропускает, считает локально).
+Таблицы: conversations, users, messages, runs, conversation_members,
+attachments, audit_log, memory_items, telegram_messages. FK на подписчике
+сброшены — копия не проверяет ссылки.
+
+Доступ агента: роль `analytics_ro`, trust-auth с localhost в pg_hba (только
+эта БД). SELECT на runs/conversations/conversation_members/attachments/
+audit_log/memory_items/telegram_messages + вьюхи `agent_messages`
+(без parts/tsv) и `agent_users` (без password_hash/prompt_fragment);
+запись — только схема `sandbox` (таблицы создаются/дополняются инструментами
+импорта, типы колонок выводятся из значений). Инструменты: `analytics_query`
+(read-only SQL, кап строк + statement_timeout), `analytics_import_rows`
+(JSON-строки → `sandbox.<table>`, append/replace), `analytics_load_attachment`
+(csv/tsv/json/jsonl из attachments/blob'ов → `sandbox.<table>`),
+`analytics_import_star` (нормализация в звёздную схему, см. ниже). Инструкция
+агенту — в глобальной настройке `agent.system_prompt` (блок про аналитику).
+Гейтинг — `mcp_servers` в ролях (admin/adult: `*`, child/guest: пусто).
+
+`analytics_import_star` — опциональная звёздная схема вместо flat-таблицы:
+вызывающий перечисляет `dimensions` (категориальные колонки), для каждой
+создаётся `sandbox.dim_<t>_<col>` (id IDENTITY + value UNIQUE, дедуп через
+ON CONFLICT, id стабильны между append'ами), факты ложатся в
+`sandbox.fact_<t>` (id + `<col>_id` + меры/passthrough), а
+`sandbox.v_<t>` — flat-view с LEFT JOIN'ами обратно (читать её, как обычную
+таблицу). `measures=None` → все numeric-колонки. NULL в dim-колонке →
+NULL dim_id. Маппинг dim-колонок пишется в `sandbox._dims_registry`.
+Конкурентные вызовы сериализуются advisory-lock'ом на схему. Без
+авто-детекции измерений, SCD и FK на dim_id.
 
 ## Удалённые сессии
 

@@ -515,3 +515,64 @@ async def test_search_finds_archived_conversation(
     token_m = await login(client, "mallory")
     resp = await client.get("/search", params={"q": "молоко"}, headers=auth(token_m))
     assert resp.json() == []
+
+
+async def test_forward_messages_endpoint(
+    engine, client: httpx.AsyncClient
+) -> None:
+    alice = await make_user("alice_fw", "adult")
+    bob = await make_user("bob_fw", "adult")
+    token = await login(client, "alice_fw")
+
+    conv = await _create(client, token)
+    ids = []
+    for text in ("один", "два", "три"):
+        resp = await client.post(
+            f"/conversations/{conv['id']}/messages",
+            json={"parts": [{"type": "text", "text": text}]},
+            headers=auth(token),
+        )
+        assert resp.status_code == 201
+        ids.append(resp.json()["id"])
+    await get_runtime().wait_idle()
+
+    resp = await client.post(
+        f"/conversations/{conv['id']}/messages/forward",
+        json={"user_id": bob.id, "message_ids": [ids[0], ids[2]]},
+        headers=auth(token),
+    )
+    assert resp.status_code == 201, resp.text
+    out = resp.json()
+    assert out["forwarded"] == 2
+
+    target = (
+        await client.get(
+            f"/conversations/{out['conversation_id']}", headers=auth(token)
+        )
+    ).json()
+    assert {m["user_id"] for m in target["members"]} == {alice.id, bob.id}
+    msgs = (
+        await client.get(
+            f"/conversations/{target['id']}/messages", headers=auth(token)
+        )
+    ).json()
+    assert [m["author_id"] for m in msgs] == [alice.id, alice.id]
+    texts = [p["text"] for m in msgs for p in m["parts"] if p["type"] == "text"]
+    assert all(t.startswith("Переслано от") for t in texts)
+    assert "один" in texts[0] and "три" in texts[1]
+
+    # Non-member of the source conversation cannot forward from it.
+    token_b = await login(client, "bob_fw")
+    resp = await client.post(
+        f"/conversations/{conv['id']}/messages/forward",
+        json={"user_id": alice.id, "message_ids": ids},
+        headers=auth(token_b),
+    )
+    assert resp.status_code == 404
+    # Forwarding to a member of the source conversation is a no-op conflict.
+    resp = await client.post(
+        f"/conversations/{target['id']}/messages/forward",
+        json={"user_id": bob.id, "message_ids": ids},
+        headers=auth(token),
+    )
+    assert resp.status_code == 409

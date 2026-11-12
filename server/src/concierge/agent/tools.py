@@ -6,7 +6,7 @@ import socket
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html import unescape
 from typing import Any, Literal
 from urllib.parse import urljoin, urlparse
@@ -14,6 +14,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 from pydantic_ai import Agent, RunContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.agent import providers
 from concierge.agent import service as agent_service
@@ -22,6 +24,7 @@ from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
 from concierge.codeagent import service as codeagent_service
 from concierge.conversations import service as conversations
+from concierge.conversations.models import Conversation
 from concierge.core.db import get_sessionmaker
 from concierge.documents.render import FORMATS, render_document
 from concierge.media import service as media_service
@@ -38,6 +41,9 @@ class ToolDeps:
     user_id: int
     conversation_id: int
     run_id: int | None = None
+    # Seq of the message that triggered the run; tools that act on "the
+    # messages before this request" use it as the cutoff (0 = no cutoff).
+    trigger_seq: int = 0
     documents: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -442,6 +448,222 @@ def make_ask_model_tool(names: list[str]) -> Callable[..., Any]:
     return ask_model
 
 
+FORWARD_MAX_MESSAGES = 20
+FORWARD_SCAN_LIMIT = 50
+FORWARD_NOTIFY_MAX = 200
+
+
+async def _resolve_user(
+    session: AsyncSession, name: str
+) -> tuple[User | None, list[str]]:
+    """Find one active user by display name / username / first name.
+
+    Returns (user, []) on a unique hit, (None, candidates) when the name is
+    ambiguous, (None, []) when nobody matches.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(User).where(User.is_active.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    needle = name.strip().lstrip("@").lower()
+    if not needle:
+        return None, []
+    exact = [
+        u
+        for u in rows
+        if u.display_name.lower() == needle or u.username.lower() == needle
+    ]
+    pool = exact or [
+        u
+        for u in rows
+        if u.display_name.lower().startswith(needle)
+        or u.username.lower().startswith(needle)
+        or needle in u.display_name.lower().split()
+    ]
+    if len(pool) == 1:
+        return pool[0], []
+    return None, [u.display_name for u in pool]
+
+
+async def _notify_dm(user_id: int, text: str) -> None:
+    """Best-effort Telegram DM ping; no-op without a link or a live bot."""
+    from concierge.channels.telegram import service as telegram_service
+
+    try:
+        await telegram_service.notify_user_dm(user_id, text)
+    except Exception:
+        log.debug("telegram dm notify failed user=%s", user_id)
+
+
+async def invite_member(
+    ctx: RunContext[ToolDeps], name: str
+) -> dict[str, Any]:
+    """Add a user to this conversation by name ("Позови Тихона").
+
+    The invited user sees the session and its history right away. Works in
+    personal sessions too — adding a member turns the session into a group.
+    """
+    from concierge.agent.runtime import _message_dict
+
+    async with get_sessionmaker()() as session:
+        conv = await session.get(Conversation, ctx.deps.conversation_id)
+        requester = await session.get(User, ctx.deps.user_id)
+        if conv is None or requester is None:
+            return {"error": "conversation not found"}
+        member_ids = {m.user_id for m in conv.members}
+        if conv.status != "active" or requester.id not in member_ids:
+            return {"error": "cannot invite into this conversation"}
+        target, candidates = await _resolve_user(session, name)
+        if target is None:
+            return {
+                "error": f"no unique user named {name!r}",
+                "candidates": candidates,
+            }
+        if target.id in member_ids:
+            return {
+                "ok": True,
+                "already_member": True,
+                "user": target.display_name,
+            }
+        added = await conversations.add_members(session, conv, [target.id])
+        if not added:
+            return {"error": "failed to add member"}
+        notice = await conversations.post_system_message(
+            session,
+            conv,
+            [
+                {
+                    "type": "text",
+                    "text": f"{target.display_name} добавлен в сессию",
+                }
+            ],
+        )
+        out = _message_dict(notice)
+        conv_id, title = conv.id, conv.title
+        target_id, display = target.id, target.display_name
+        requester_name = requester.display_name
+    hub = get_hub()
+    updated = ChannelEvent(
+        "conversation.updated", conv_id, {"conversation": {"id": conv_id}}
+    )
+    await hub.publish(updated)
+    await hub.publish_users({target_id}, updated)
+    created = ChannelEvent("message.created", conv_id, {"message": out})
+    await hub.publish(created)
+    await hub.publish_users({target_id}, created)
+    await _notify_dm(
+        target_id,
+        f"{requester_name} пригласил вас в сессию «{title or conv_id}»",
+    )
+    return {"ok": True, "user": display, "conversation_id": conv_id}
+
+
+async def forward_messages(
+    ctx: RunContext[ToolDeps],
+    recipient: str,
+    count: int = 1,
+    gap_minutes: float | None = None,
+) -> dict[str, Any]:
+    """Forward recent messages of this conversation to another user.
+
+    "Перешли это Насте" -> count=1 sends the last message before this
+    request; "Перешли последние сообщения" -> either pass the right count,
+    or set gap_minutes to send the contiguous tail of messages separated by
+    pauses of at most gap_minutes. The messages land in the direct session
+    shared with the recipient (created on first use).
+    """
+    from concierge.agent.runtime import _message_dict
+
+    count = max(1, min(int(count), FORWARD_MAX_MESSAGES))
+    async with get_sessionmaker()() as session:
+        conv = await session.get(Conversation, ctx.deps.conversation_id)
+        requester = await session.get(User, ctx.deps.user_id)
+        if conv is None or requester is None:
+            return {"error": "conversation not found"}
+        member_ids = {m.user_id for m in conv.members}
+        if requester.id not in member_ids:
+            return {"error": "not a member of this conversation"}
+        target, candidates = await _resolve_user(session, recipient)
+        if target is None:
+            return {
+                "error": f"no unique user named {recipient!r}",
+                "candidates": candidates,
+            }
+        if target.id == requester.id:
+            return {"error": "recipient is the requester"}
+        if target.id in member_ids:
+            return {
+                "ok": True,
+                "already_member": True,
+                "user": target.display_name,
+            }
+        rows = await conversations.list_messages(
+            session,
+            conv.id,
+            before_seq=ctx.deps.trigger_seq or None,
+            limit=FORWARD_SCAN_LIMIT,
+        )
+        rows = [m for m in rows if m.author_kind in ("user", "assistant")]
+        if gap_minutes is not None:
+            gap = timedelta(minutes=max(gap_minutes, 0.0))
+            selected = rows[-1:]
+            for m in reversed(rows[:-1]):
+                if (
+                    m.created_at is None
+                    or selected[0].created_at is None
+                    or selected[0].created_at - m.created_at > gap
+                ):
+                    break
+                selected.insert(0, m)
+            selected = selected[-FORWARD_MAX_MESSAGES:]
+        else:
+            selected = rows[-count:]
+        if not selected:
+            return {"error": "nothing to forward"}
+        target_conv, posted = await conversations.forward_to_user(
+            session, requester, target, selected
+        )
+        delivered = [_message_dict(m) for m in posted]
+        preview = message_text(selected[-1].parts).strip()[
+            :FORWARD_NOTIFY_MAX
+        ]
+        requester_id, requester_name = requester.id, requester.display_name
+        target_conv_id, target_id = target_conv.id, target.id
+        display = target.display_name
+    if not delivered:
+        return {"error": "nothing forwardable in the selected messages"}
+    hub = get_hub()
+    await hub.publish_users(
+        {requester_id, target_id},
+        ChannelEvent(
+            "conversation.updated",
+            target_conv_id,
+            {"conversation": {"id": target_conv_id}},
+        ),
+    )
+    for out in delivered:
+        await hub.publish_users(
+            {requester_id, target_id},
+            ChannelEvent(
+                "message.created", target_conv_id, {"message": out}
+            ),
+        )
+    n = len(delivered)
+    suffix = preview if n == 1 else f"({n}) … {preview}"
+    await _notify_dm(target_id, f"Переслано от {requester_name}: {suffix}")
+    return {
+        "ok": True,
+        "user": display,
+        "conversation_id": target_conv_id,
+        "forwarded": n,
+    }
+
+
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
     f.__name__: f
     for f in (
@@ -453,6 +675,8 @@ CORE_TOOLS: dict[str, Callable[..., Any]] = {
         create_document,
         delegate_coding_task,
         fetch_url,
+        invite_member,
+        forward_messages,
     )
 }
 
