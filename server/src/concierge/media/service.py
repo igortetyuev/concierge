@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
-from concierge.conversations.models import ConversationMember
+from concierge.conversations.models import Conversation, ConversationMember
 from concierge.core.config import get_settings
 from concierge.core.db import get_sessionmaker
 from concierge.media.models import Attachment
@@ -152,6 +152,9 @@ async def can_access(session: AsyncSession, att: Attachment, user: User) -> bool
     if att.uploaded_by == user.id or has_permission(user.role.permissions, "*"):
         return True
     if att.conversation_id is None:
+        return False
+    conv = await session.get(Conversation, att.conversation_id)
+    if conv is None or conv.status == "deleted":
         return False
     member = await session.get(
         ConversationMember, (att.conversation_id, user.id)

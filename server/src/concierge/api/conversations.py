@@ -134,7 +134,11 @@ async def _member_conv_or_404(
     session: AsyncSession, conversation_id: int, user: User
 ) -> Conversation:
     conv = await service.get_member_conversation(session, conversation_id, user.id)
-    if conv is None:
+    # Soft-deleted sessions are invisible to everyone but admins.
+    if conv is None or (
+        conv.status == "deleted"
+        and not has_permission(user.role.permissions, "*")
+    ):
         raise HTTPException(404, "conversation not found")
     return conv
 
@@ -208,9 +212,16 @@ async def create_conversation(
 async def list_conversations(
     user: CurrentUser,
     session: SessionDep,
-    status: Annotated[str, Query(pattern="^(active|archived|all)$")] = "active",
+    status: Annotated[
+        str, Query(pattern="^(active|archived|deleted|all)$")
+    ] = "active",
 ) -> list[ConversationOut]:
-    convs = await service.list_conversations(session, user.id, status)
+    include_deleted = has_permission(user.role.permissions, "*")
+    if status == "deleted" and not include_deleted:
+        raise HTTPException(403, "permission denied: deleted conversations")
+    convs = await service.list_conversations(
+        session, user.id, status, include_deleted=include_deleted
+    )
     return [await _conv_out(session, c, user) for c in convs]
 
 
@@ -257,6 +268,42 @@ async def patch_conversation(
         )
     )
     return out
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    request: Request,
+    user: CurrentUser,
+    session: SessionDep,
+) -> dict[str, bool]:
+    """Soft-delete an archived session: hidden for everyone but admins."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    if not has_permission(user.role.permissions, "delete_conversations"):
+        raise HTTPException(403, "permission denied: delete_conversations")
+    if not _can_manage(conv, user):
+        raise HTTPException(403, "only the owner can delete the conversation")
+    if conv.status != "archived":
+        raise HTTPException(409, "only archived conversations can be deleted")
+    audit.record(
+        session,
+        "conversation.delete",
+        actor_id=user.id,
+        actor_name=user.username,
+        target=f"conversation:{conv.id}",
+        detail={"title": conv.title},
+        ip=client_ip(request),
+    )
+    conv = await service.update_conversation(session, conv, status="deleted")
+    out = await _conv_out(session, conv, user)
+    await get_hub().publish(
+        ChannelEvent(
+            "conversation.updated",
+            conv.id,
+            {"conversation": out.model_dump(mode="json")},
+        )
+    )
+    return {"ok": True}
 
 
 class AddMembersBody(BaseModel):

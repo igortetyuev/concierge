@@ -2,8 +2,10 @@ import httpx
 from sqlalchemy import select
 
 from concierge.agent.runtime import get_runtime
-from concierge.conversations.models import Run
+from concierge.auth.models import Role
+from concierge.conversations.models import Conversation, Run
 from concierge.core import db
+from concierge.memory import indexer as memory_indexer
 from tests.conftest import auth, login, make_user
 
 
@@ -361,6 +363,122 @@ async def test_delete_message(engine, client: httpx.AsyncClient) -> None:
             headers=auth(token_a),
         )
     ).status_code == 404
+
+
+async def test_delete_conversation_is_soft_and_admin_only(
+    engine, client: httpx.AsyncClient
+) -> None:
+    await make_user("alice", "adult")
+    bob = await make_user("bob", "adult")
+    admin = await make_user("carol", "admin")
+    token_a = await login(client, "alice")
+    token_b = await login(client, "bob")
+    token_adm = await login(client, "carol")
+    conv = await _create(
+        client, token_a, kind="group", member_ids=[bob.id, admin.id]
+    )
+    await client.post(
+        f"/conversations/{conv['id']}/messages",
+        json={"parts": [{"type": "text", "text": "секретное слово"}]},
+        headers=auth(token_a),
+    )
+    # Drain the scheduled run; its session shares the sqlite connection.
+    await get_runtime().wait_idle()
+
+    # Only archived sessions can be deleted.
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}", headers=auth(token_adm)
+        )
+    ).status_code == 409
+
+    resp = await client.patch(
+        f"/conversations/{conv['id']}",
+        json={"status": "archived"},
+        headers=auth(token_a),
+    )
+    assert resp.status_code == 200
+    await memory_indexer.wait_idle()
+
+    # Permission-gated: members without delete_conversations get 403.
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}", headers=auth(token_b)
+        )
+    ).status_code == 403
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}", headers=auth(token_a)
+        )
+    ).status_code == 403
+
+    # Grant the permission to adults: a non-owner member still cannot delete.
+    async with db.get_sessionmaker()() as session:
+        role = (
+            await session.execute(select(Role).where(Role.name == "adult"))
+        ).scalar_one()
+        role.permissions = {**role.permissions, "delete_conversations": True}
+        await session.commit()
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}", headers=auth(token_b)
+        )
+    ).status_code == 403
+
+    # The owner with the permission soft-deletes: the row stays.
+    resp = await client.delete(
+        f"/conversations/{conv['id']}", headers=auth(token_a)
+    )
+    assert resp.status_code == 200, resp.text
+    async with db.get_sessionmaker()() as session:
+        row = await session.get(Conversation, conv["id"])
+        assert row is not None
+        assert row.status == "deleted"
+        assert row.archived_at is not None
+
+    # Hidden from regular members, visible to the admin.
+    assert (
+        await client.get(f"/conversations/{conv['id']}", headers=auth(token_a))
+    ).status_code == 404
+    assert (
+        await client.get(f"/conversations/{conv['id']}", headers=auth(token_b))
+    ).status_code == 404
+    assert (
+        await client.get(f"/conversations/{conv['id']}", headers=auth(token_adm))
+    ).status_code == 200
+    assert (
+        await client.get(
+            "/conversations", params={"status": "all"}, headers=auth(token_a)
+        )
+    ).json() == []
+    deleted = await client.get(
+        "/conversations", params={"status": "deleted"}, headers=auth(token_adm)
+    )
+    assert [c["id"] for c in deleted.json()] == [conv["id"]]
+    assert (
+        await client.get(
+            "/conversations", params={"status": "deleted"}, headers=auth(token_a)
+        )
+    ).status_code == 403
+
+    # Search skips deleted sessions.
+    resp = await client.get(
+        "/search", params={"q": "секретное"}, headers=auth(token_a)
+    )
+    assert resp.json() == []
+
+    # Re-deleting and posting are rejected; the admin can restore to archived.
+    assert (
+        await client.delete(
+            f"/conversations/{conv['id']}", headers=auth(token_adm)
+        )
+    ).status_code == 409
+    resp = await client.patch(
+        f"/conversations/{conv['id']}",
+        json={"status": "archived"},
+        headers=auth(token_adm),
+    )
+    assert resp.json()["status"] == "archived"
 
 
 async def test_search_finds_archived_conversation(

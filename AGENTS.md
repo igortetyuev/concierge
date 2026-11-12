@@ -106,6 +106,16 @@ capability `chat` старые сообщения сворачиваются в 
 биндинга компакшен выключен. Задаётся в `/admin` → Провайдеры → params JSON
 биндинга, напр. `{"context_length": 128000}`.
 
+## Удалённые сессии
+
+`conversations.status` — `active | archived | deleted` (soft-delete, миграция
+0010). `DELETE /api/conversations/{id}` только для архивных: нужен пермишен
+`delete_conversations` (в ролях; у admin через `*`) + owner/`*`. Удалённые
+скрыты для всех, кроме `*`: не отдаются в `GET /conversations` (фильтр
+`?status=deleted` и `all` — только админу), `_member_conv_or_404` отдаёт 404,
+поиск/retrieval и attachments недоступны. В PWA — таб «Удалённые» у админа;
+админ может вернуть сессию в архив (PATCH status=archived).
+
 ## Админка и эксплуатация
 
 `/admin` в PWA (иконка-гаечный ключ в шапке, видна при `manage_*`/`settings.global` правах):

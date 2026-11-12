@@ -67,7 +67,10 @@ async def get_member_conversation(
 
 
 async def list_conversations(
-    session: AsyncSession, user_id: int, status: str = "active"
+    session: AsyncSession,
+    user_id: int,
+    status: str = "active",
+    include_deleted: bool = False,
 ) -> list[Conversation]:
     q = (
         select(Conversation)
@@ -80,6 +83,8 @@ async def list_conversations(
     )
     if status != "all":
         q = q.where(Conversation.status == status)
+    elif not include_deleted:
+        q = q.where(Conversation.status != "deleted")
     return list((await session.execute(q)).scalars())
 
 
@@ -97,7 +102,11 @@ async def update_conversation(
         conv.reply_mode = reply_mode
     if status is not None and status != conv.status:
         conv.status = status
-        conv.archived_at = utcnow() if status == "archived" else None
+        # Keep archived_at on soft-delete so the archive timestamp survives.
+        if status == "archived":
+            conv.archived_at = utcnow()
+        elif status == "active":
+            conv.archived_at = None
     await session.commit()
     await session.refresh(conv)
     return conv
@@ -350,7 +359,12 @@ async def search_messages(
         cond = cast(Message.parts, String).ilike(f"%{query}%")
     q = (
         select(Message)
-        .where(Message.conversation_id.in_(member_conv), cond)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(
+            Message.conversation_id.in_(member_conv),
+            Conversation.status != "deleted",
+            cond,
+        )
         .order_by(Message.created_at.desc())
         .limit(limit)
     )

@@ -16,7 +16,7 @@ export const $typing = atom<Record<number, Record<number, number>>>({})
 export const $previews = atom<Record<number, string>>({})
 export const $activeId = atom<number | null>(null)
 export const $listStatus = atom<'idle' | 'loading' | 'error'>('idle')
-export const $tab = atom<'active' | 'archived'>('active')
+export const $tab = atom<'active' | 'archived' | 'deleted'>('active')
 
 function byUpdatedAt(list: ConversationOut[]): ConversationOut[] {
   return [...list].sort((a, b) =>
@@ -30,6 +30,15 @@ function patchRecord<V>(
   value: V,
 ): void {
   store.set({ ...store.get(), [id]: value })
+}
+
+function dropRecord<V>(
+  store: { get(): Record<number, V>; set(v: Record<number, V>): void },
+  id: number,
+): void {
+  const next = { ...store.get() }
+  delete next[id]
+  store.set(next)
 }
 
 function myId(): number | null {
@@ -132,6 +141,20 @@ export async function addMember(id: number, userId: number): Promise<void> {
 export async function removeMember(id: number, userId: number): Promise<void> {
   const conv = await apiClient.removeMember(id, userId)
   upsertConversation(conv)
+}
+
+export function removeConversation(id: number): void {
+  $conversations.set($conversations.get().filter((c) => c.id !== id))
+  dropRecord($unread, id)
+  dropRecord($maxSeq, id)
+  dropRecord($readSeqs, id)
+  dropRecord($online, id)
+  dropRecord($previews, id)
+}
+
+export async function deleteConversation(id: number): Promise<void> {
+  await apiClient.deleteConversation(id)
+  removeConversation(id)
 }
 
 export async function loadUsers(): Promise<void> {

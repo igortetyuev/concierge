@@ -57,7 +57,14 @@ export default function ConversationList() {
     navigate(`/c/${conv.id}`)
   }
 
-  const filtered = convs.filter((c) => (tab === 'archived' ? c.status === 'archived' : c.status === 'active'))
+  const canSeeDeleted = me?.permissions['*'] === true
+  const filtered = convs.filter((c) =>
+    tab === 'deleted'
+      ? canSeeDeleted && c.status === 'deleted'
+      : tab === 'archived'
+        ? c.status === 'archived'
+        : c.status === 'active',
+  )
   const convById = new Map(convs.map((c) => [c.id, c]))
   const isAdmin =
     me?.permissions['*'] === true ||
@@ -137,11 +144,25 @@ export default function ConversationList() {
             >
               Архив
             </button>
+            {canSeeDeleted && (
+              <button
+                role="tab"
+                aria-selected={tab === 'deleted'}
+                className={tab === 'deleted' ? 'active' : ''}
+                onClick={() => $tab.set('deleted')}
+              >
+                Удалённые
+              </button>
+            )}
           </div>
           <div className="convlist-scroll" role="list">
             {filtered.length === 0 && status === 'idle' && (
               <div className="convlist-empty muted">
-                {tab === 'active' ? 'Нет сессий — начните новую' : 'Архив пуст'}
+                {tab === 'active'
+                  ? 'Нет сессий — начните новую'
+                  : tab === 'archived'
+                    ? 'Архив пуст'
+                    : 'Нет удалённых сессий'}
               </div>
             )}
             {filtered.length === 0 && status === 'loading' && (

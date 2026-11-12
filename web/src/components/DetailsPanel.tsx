@@ -11,6 +11,7 @@ import {
   $users,
   addMember,
   convTitle,
+  deleteConversation,
   loadUsers,
   patchConversation,
   removeMember,
@@ -40,6 +41,12 @@ export default function DetailsPanel({ convId }: { convId: number }) {
 
   const canManage = conv.owner_id === me?.id || me?.permissions['*'] === true
   const archived = conv.status === 'archived'
+  const deleted = conv.status === 'deleted'
+  const canDelete =
+    archived &&
+    canManage &&
+    (me?.permissions['delete_conversations'] === true ||
+      me?.permissions['*'] === true)
   const memberIds = new Set(conv.members.map((m) => m.user_id))
   const candidates = users.filter((u) => !memberIds.has(u.id))
 
@@ -97,6 +104,7 @@ export default function DetailsPanel({ convId }: { convId: number }) {
             {conv.kind === 'group' ? 'Групповая сессия' : 'Личная сессия'}
             {conv.origin === 'voice_quick' ? ' · голосовая' : ''}
             {archived ? ' · в архиве' : ''}
+            {deleted ? ' · удалена' : ''}
           </div>
         </section>
 
@@ -183,7 +191,7 @@ export default function DetailsPanel({ convId }: { convId: number }) {
           )}
         </section>
 
-        {canManage && (
+        {canManage && !deleted && (
           <section className="details-section">
             <button
               className="btn"
@@ -191,10 +199,48 @@ export default function DetailsPanel({ convId }: { convId: number }) {
                 void patchConversation(convId, {
                   status: archived ? 'active' : 'archived',
                 })
-                if (!archived) navigate('/')
+                if (!archived) {
+                  $detailsOpen.set(false)
+                  navigate('/')
+                }
               }}
             >
               {archived ? 'Вернуть из архива' : 'В архив'}
+            </button>
+          </section>
+        )}
+
+        {canDelete && (
+          <section className="details-section">
+            <button
+              className="btn"
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    'Удалить сессию? Она будет скрыта для всех участников.',
+                  )
+                )
+                  return
+                void deleteConversation(convId).then(() => {
+                  $detailsOpen.set(false)
+                  navigate('/')
+                })
+              }}
+            >
+              Удалить сессию
+            </button>
+          </section>
+        )}
+
+        {canManage && deleted && (
+          <section className="details-section">
+            <button
+              className="btn"
+              onClick={() =>
+                void patchConversation(convId, { status: 'archived' })
+              }
+            >
+              Вернуть в архив
             </button>
           </section>
         )}

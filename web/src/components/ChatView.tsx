@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent, PointerEvent, ReactNode } from 'react'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { useStore } from '@nanostores/react'
 
 import type { MessageOut } from '../lib/api'
@@ -173,6 +173,7 @@ function SwipeRow({
 }
 
 export default function ChatView({ convId }: { convId: number }) {
+  const navigate = useNavigate()
   const me = useStore($user)
   const conv = useStore($conversations).find((c) => c.id === convId)
   const msgs = useStore($messages)[convId] ?? EMPTY_MSGS
@@ -196,6 +197,14 @@ export default function ChatView({ convId }: { convId: number }) {
     void loadInitial(convId).then(() => markLatestRead(convId))
     return () => $activeId.set(null)
   }, [convId])
+
+  // A session deleted while open is hidden from non-admins.
+  useEffect(() => {
+    if (conv?.status === 'deleted' && me?.permissions['*'] !== true) {
+      $detailsOpen.set(false)
+      navigate('/')
+    }
+  }, [conv?.status, me?.permissions, navigate])
 
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 1000)
@@ -259,6 +268,7 @@ export default function ChatView({ convId }: { convId: number }) {
   const onlineOthers = online.filter((id) => id !== me?.id)
   const streamList = Object.values(streams).sort((a, b) => a.runId - b.runId)
   const archived = conv?.status === 'archived'
+  const deleted = conv?.status === 'deleted'
   const canManage = conv != null && (conv.owner_id === me?.id || me?.permissions['*'] === true)
   const mentionNames =
     conv?.kind === 'group'
@@ -442,7 +452,11 @@ export default function ChatView({ convId }: { convId: number }) {
         </button>
       )}
 
-      {archived ? (
+      {deleted ? (
+        <div className="composer archived-notice">
+          <span className="muted">Сессия удалена</span>
+        </div>
+      ) : archived ? (
         <div className="composer archived-notice">
           <span className="muted">Сессия в архиве</span>
           {canManage && (

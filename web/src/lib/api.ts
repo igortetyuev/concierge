@@ -396,7 +396,7 @@ export const apiClient = {
   me: () => api<UserOut>('/auth/me'),
   listUsers: () => api<UserRef[]>('/users'),
 
-  listConversations: (status: 'active' | 'archived' | 'all' = 'all') =>
+  listConversations: (status: 'active' | 'archived' | 'deleted' | 'all' = 'all') =>
     api<ConversationOut[]>(`/conversations?status=${status}`),
   getConversation: (id: number) => api<ConversationOut>(`/conversations/${id}`),
   createConversation: (kind: 'personal' | 'group', title: string, memberIds: number[]) =>
@@ -418,6 +418,8 @@ export const apiClient = {
     post<ConversationOut>(`/conversations/${id}/members`, { user_ids: userIds }),
   removeMember: (id: number, userId: number) =>
     api<ConversationOut>(`/conversations/${id}/members/${userId}`, { method: 'DELETE' }),
+  deleteConversation: (id: number) =>
+    api<{ ok: boolean }>(`/conversations/${id}`, { method: 'DELETE' }),
 
   listMessages: (id: number, beforeSeq?: number, limit = 50) =>
     api<MessageOut[]>(

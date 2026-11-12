@@ -161,8 +161,14 @@ async def member_conversation_ids(
     return list(
         (
             await session.execute(
-                select(ConversationMember.conversation_id).where(
-                    ConversationMember.user_id == user_id
+                select(ConversationMember.conversation_id)
+                .join(
+                    Conversation,
+                    Conversation.id == ConversationMember.conversation_id,
+                )
+                .where(
+                    ConversationMember.user_id == user_id,
+                    Conversation.status != "deleted",
                 )
             )
         ).scalars()
