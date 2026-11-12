@@ -359,6 +359,20 @@ export default function MessageParts({
       .map((p) => [String(p.tool_call_id ?? ''), p]),
   )
   const [viewer, setViewer] = useState<{ idx: number; url: string } | null>(null)
+  // Legacy voice messages store the recording as a separate audio part next
+  // to the transcribed text; fold it into the speaker button instead of
+  // rendering an inline player with a duplicated transcript.
+  const needsFold = parts.some(
+    (p) =>
+      p.type === 'text' &&
+      p.transcribed === true &&
+      typeof p.voice_attachment_id !== 'number',
+  )
+  const foldedAudio = needsFold
+    ? parts.find((p) => p.type === 'audio' && p.attachment_id != null)
+    : undefined
+  const foldedAudioId =
+    foldedAudio != null ? Number(foldedAudio.attachment_id) : null
   return (
     <>
       {parts.map((p, i) => {
@@ -366,7 +380,9 @@ export default function MessageParts({
           const voiceId =
             typeof p.voice_attachment_id === 'number'
               ? p.voice_attachment_id
-              : null
+              : p.transcribed === true
+                ? foldedAudioId
+                : null
           if (voiceId != null) {
             return (
               <VoiceTextPart
@@ -375,27 +391,6 @@ export default function MessageParts({
                 attachmentId={voiceId}
                 mentions={mentions}
               />
-            )
-          }
-          if (p.transcribed === true && convId != null) {
-            return (
-              <div key={i} className="transcribed">
-                <Markdown text={String(p.text ?? '')} mentions={mentions} />
-                <span className="transcribed-tag muted">
-                  распознано
-                  <button
-                    className="vq-act"
-                    onClick={() =>
-                      $composerPrefill.set({
-                        convId,
-                        text: String(p.text ?? ''),
-                      })
-                    }
-                  >
-                    исправить
-                  </button>
-                </span>
-              </div>
             )
           }
           return (
@@ -440,6 +435,7 @@ export default function MessageParts({
           )
         }
         if (p.attachment_id != null) {
+          if (Number(p.attachment_id) === foldedAudioId) return null
           const imgIdx = p.type === 'image' ? imageParts.indexOf(p) : -1
           return (
             <AttachmentPart

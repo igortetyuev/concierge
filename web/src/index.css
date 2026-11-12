@@ -1715,23 +1715,6 @@ a {
   cursor: default;
 }
 
-.transcribed {
-  display: block;
-}
-
-.transcribed-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.75rem;
-}
-
-.transcribed-tag .vq-act {
-  margin-top: 0;
-  padding: 1px 8px;
-  font-size: 0.72rem;
-}
-
 .msg.sys {
   justify-content: center;
 }
