@@ -1,7 +1,7 @@
 # Concierge
 
 Семейный агент-консьерж. Монорепо: `server/` — FastAPI + PydanticAI + PostgreSQL + Qdrant
-(деплоится на `box`, ALT Linux), `web/` — адаптивное PWA (React + Vite + TS), `deploy/` —
+(деплоится на выделенный хост по SSH), `web/` — адаптивное PWA (React + Vite + TS), `deploy/` —
 systemd unit, Caddyfile, скрипты деплоя. Дорожная карта: `.claude/plans/2026-11-10-concierge-roadmap.md`.
 
 ## Проверки (server/)
@@ -26,36 +26,43 @@ pnpm build
 PWA: API проксируется с `/api` (dev/preview — vite proxy на `VITE_API_TARGET`,
 prod — Caddy `handle_path`). Иконки: `node scripts/generate-icons.mjs`.
 
-## Деплой на box
+## Деплой
+
+Параметры деплоя — `deploy/.env` (в .gitignore; шаблон — `deploy/.env.example`):
+`CONCIERGE_REMOTE` (ssh-алиас хоста), `CONCIERGE_DOMAIN`, `CONCIERGE_DEST`,
+`CONCIERGE_BACKUP_DIR`.
 
 ```bash
 deploy/provision.sh   # одноразовая инициализация (PostgreSQL, Caddy, uv, systemd)
 deploy/deploy.sh      # rsync -> uv sync -> alembic upgrade head -> restart
-curl -k https://box/healthz   # -> {"db":"ok","qdrant":"ok"}
+curl -k https://$CONCIERGE_DOMAIN/healthz   # -> {"db":"ok","qdrant":"ok"}
 ```
 
-Конфигурация сервера — через env с префиксом `CONCIERGE_` (на box: `/etc/concierge/.env`).
+Конфигурация приложения на сервере — через env с префиксом `CONCIERGE_`
+(`/etc/concierge/.env` на хосте).
 
 ## Эмбеддинги
 
-Ollama на `winhost` (192.168.99.66, Windows): `http://192.168.99.66:11434/v1`, модель
-`bge-m3` (1024-dim). На box capability `embedding` привязана к провайдеру
-`ollama-winhost` (bge-m3): коллекции Qdrant `concierge_memory__bgem3` и
+Ollama на отдельном Windows-хосте в LAN: `http://<win-host>:11434/v1`, модель
+`bge-m3` (1024-dim). На сервере capability `embedding` привязана к провайдеру
+`ollama-lan` (bge-m3): коллекции Qdrant `concierge_memory__bgem3` и
 `concierge_messages__bgem3`. Без binding `remember`/`recall` молча деградируют
 (запись в `memory_items` есть, векторов нет) — смотри warning в journald.
-Автозапуск — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env, firewall-правило «Ollama 11434`.
-На box заведён провайдер `ollama-winhost` (kind `ollama`, тот же base_url); capability `vision`
+Автозапуск на Windows — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env,
+firewall-правило для порта 11434.
+На сервере заведён провайдер `ollama-lan` (kind `ollama`, тот же base_url); capability `vision`
 привязана к нему как `qwen3-vl:4b-instruct` (CPU-инференс ~10–20 с на картинку).
 
 ## STT/TTS
 
-Speaches 0.8.3 на `winhost` (`C:\Users\user\speaches-venv`, cwd `C:\Users\user\speaches-home`,
-лог `speaches.log`): `http://192.168.99.66:8000/v1`, whisper `large-v3-turbo` на CPU
+Speaches 0.8.3 на том же Windows-хосте (venv `C:\Users\<user>\speaches-venv`,
+cwd `C:\Users\<user>\speaches-home`, лог `speaches.log`):
+`http://<win-host>:8000/v1`, whisper `large-v3-turbo` на CPU
 (алиас `whisper-1`), Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
-firewall-правило «Speaches 8000». Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
+firewall-правило для порта 8000. Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
 только с неиспользуемыми aiortc/gradio).
 TODO: привязать capability `stt` → provider `openai-compatible` base_url
-`http://192.168.99.66:8000/v1`, model `whisper-1` (и `tts` → model `tts-1`, после проверки голосов Kokoro).
+`http://<win-host>:8000/v1`, model `whisper-1` (и `tts` → model `tts-1`, после проверки голосов Kokoro).
 
 ## Именованные модели («спроси …»)
 
@@ -99,13 +106,13 @@ capability `chat` старые сообщения сворачиваются в 
 code-agents, Telegram, журнал runs/затрат и аудит-лог. Аудит пишется в таблицу
 `audit_log` (миграция 0006); метрики — `GET /api/metrics` (admin).
 
-Бэкапы на box: `concierge-backup.timer` (ежедневно 04:00) → `/srv/concierge/backups/<дата>/`
+Бэкапы на сервере: `concierge-backup.timer` (ежедневно 04:00) → `/srv/concierge/backups/<дата>/`
 (`pg_dump -Fc` + rsync blobs + per-collection снапшоты Qdrant; ротация 14 дней).
-Ручной запуск: `systemctl start concierge-backup`. Скачать на Mac:
-`deploy/backup-pull.sh` → `~/concierge-backups`. Восстановление:
-`ssh box 'bash /srv/concierge/app/deploy/restore.sh <YYYY-MM-DD>'` — останавливает сервис,
-пересоздаёт БД, возвращает blobs и снапшоты Qdrant. Логи — journald, лимит 200M/1 месяц
-(`/etc/systemd/journald.conf.d/concierge.conf`).
+Ручной запуск: `systemctl start concierge-backup`. Скачать локально:
+`deploy/backup-pull.sh` → `$CONCIERGE_BACKUP_DIR`. Восстановление:
+`ssh "$CONCIERGE_REMOTE" 'bash /srv/concierge/app/deploy/restore.sh <YYYY-MM-DD>'` —
+останавливает сервис, пересоздаёт БД, возвращает blobs и снапшоты Qdrant.
+Логи — journald, лимит 200M/1 месяц (`/etc/systemd/journald.conf.d/concierge.conf`).
 
 ## Telegram-бот
 
@@ -118,6 +125,6 @@ code-agents, Telegram, журнал runs/затрат и аудит-лог. Ау
 
 ## Qdrant — решение по доступу
 
-Qdrant на box слушает `0.0.0.0:6333/6334` — сознательно открыт на домашнюю LAN:
-им пользуется Hermes с Mac (коллекции `hermes_memories` и др.). Закрывать порты нельзя;
-политику пересматривать только вместе с миграцией Hermes.
+Qdrant на сервере слушает `0.0.0.0:6333/6334` — сознательно открыт на LAN:
+им пользуются другие локальные сервисы (напр. `hermes_*` коллекции). Закрывать порты нельзя;
+политику пересматривать только вместе с миграцией этих сервисов.

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=appuser
+User=__SERVICE_USER__
 WorkingDirectory=/srv/concierge/app/server
 EnvironmentFile=/etc/concierge/.env
 ExecStart=/srv/concierge/app/server/.venv/bin/uvicorn concierge.api.app:app --host 127.0.0.1 --port 8000

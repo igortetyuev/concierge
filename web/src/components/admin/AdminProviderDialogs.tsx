@@ -149,7 +149,7 @@ export function ProviderDialog({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="напр. yandex, winhost-ollama"
+          placeholder="напр. yandex, local-ollama"
           autoFocus
         />
       </label>

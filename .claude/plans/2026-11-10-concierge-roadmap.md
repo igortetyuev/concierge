@@ -31,8 +31,8 @@ blocked_reason: null
 
 ## Context (обследованное окружение)
 
-- **box** (`192.168.99.16`, ALT Linux 6.12, x86_64, 4 CPU, **3.7 GiB RAM**, 146 GB свободно, Python 3.12.13). Нет Docker, нет Postgres. Qdrant — systemd `qdrant.service`, порты 6333/6334, коллекции: `hermes_memories` (384-dim, named vector `dense`, payload `session_id`,`source`), `family_archive` (1024-dim, payload `doc_id`,`doc_type`,`persons`,`places`,`themes`,`page_start`), `obsidian_notes`. SSH `box` работает без пароля (BatchMode). Открытые порты: (перечень опущен).
-- **Mac** (этот): `devin`, `claude` в `~/.local/bin`; `uv 0.10`, Python 3.14, node 26, pnpm, docker. `pi` не установлен. Hermes настроен на локальную модель `deepseek-heretic` через `http://lan-host:11434/v1` (Ollama на другом Mac).
+- **box** (LAN-хост, ALT Linux 6.12, x86_64, 4 CPU, **3.7 GiB RAM**, 146 GB свободно, Python 3.12.13). Нет Docker, нет Postgres. Qdrant — systemd `qdrant.service`, порты 6333/6334, коллекции: `hermes_memories` (384-dim, named vector `dense`, payload `session_id`,`source`), `family_archive` (1024-dim, payload `doc_id`,`doc_type`,`persons`,`places`,`themes`,`page_start`), `obsidian_notes`. SSH `box` работает без пароля (BatchMode).
+- **Mac** (этот): `devin`, `claude` в `~/.local/bin`; `uv 0.10`, Python 3.14, node 26, pnpm, docker. `pi` не установлен. Hermes настроен на локальную модель `deepseek-heretic` через `http://<lan-host>:11434/v1` (Ollama на другом Mac).
 - Ограничение RAM на box: Postgres (~200 MB) + сервер (~300–500 MB) + Qdrant ок; **локальные эмбеддинги на box только лёгкие** (fastembed `all-MiniLM-L6-v2`, 384-dim) либо через внешний провайдер — выбирается через capability `embedding`.
 - PWA требует HTTPS (service worker, `getUserMedia`) → обратный прокси с TLS (Caddy с internal CA или Tailscale HTTPS). Для Telegram-бота на box нужен исходящий доступ к `api.telegram.org` (long polling — входящих портов не нужно).
 

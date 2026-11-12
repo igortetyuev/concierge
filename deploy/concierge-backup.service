@@ -3,5 +3,5 @@ Description=Concierge backup (pg_dump + blobs + Qdrant snapshots)
 
 [Service]
 Type=oneshot
-User=appuser
+User=__SERVICE_USER__
 ExecStart=/srv/concierge/app/deploy/backup.sh

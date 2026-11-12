@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Restore a backup on box: restore.sh <YYYY-MM-DD>
 # Recreates the DB from postgres.dump, replaces blobs, uploads Qdrant snapshots.
-# Stops the service during restore. Run as appuser: ssh box 'bash /srv/concierge/app/deploy/restore.sh 2026-11-11'
+# Stops the service during restore. Run on the app server as the service user:
+# ssh <host> 'bash /srv/concierge/app/deploy/restore.sh <YYYY-MM-DD>'
 set -euo pipefail
 
 STAMP="${1:?usage: restore.sh <YYYY-MM-DD>}"

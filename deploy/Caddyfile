@@ -26,12 +26,12 @@
 	encode zstd gzip
 }
 
-box {
+__DOMAIN__ {
 	tls internal
 	import app
 }
 
-# LAN-only: plain HTTP too (http://box, http://<ip>)
+# LAN-only: plain HTTP too
 :80 {
 	import app
 }

@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
-# One-time provisioning of box (ALT Linux): PostgreSQL, Caddy, uv, dirs, env file.
-# Idempotent; safe to re-run. Existing /etc/concierge/.env (secrets) is preserved.
+# One-time provisioning of the app server (ALT Linux): PostgreSQL, Caddy, uv,
+# dirs, env file. Idempotent; safe to re-run. Existing /etc/concierge/.env
+# (secrets) is preserved.
 set -euo pipefail
 
-REMOTE="${CONCIERGE_REMOTE:-box}"
-
 cd "$(dirname "$0")"
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
+REMOTE="${CONCIERGE_REMOTE:?set CONCIERGE_REMOTE in deploy/.env}"
+DOMAIN="${CONCIERGE_DOMAIN:?set CONCIERGE_DOMAIN in deploy/.env}"
 
 # Copy unit + Caddyfile to a staging dir, then install with sudo.
 ssh "$REMOTE" 'mkdir -p ~/concierge-provision'
-scp concierge.service concierge-backup.service concierge-backup.timer Caddyfile \
+STAGE="$(mktemp -d)"
+sed "s/__DOMAIN__/${DOMAIN}/g" Caddyfile > "$STAGE/Caddyfile"
+scp "$STAGE/Caddyfile" "$REMOTE:~/concierge-provision/Caddyfile"
+rm -rf "$STAGE"
+scp concierge.service concierge-backup.service concierge-backup.timer \
     "$REMOTE:~/concierge-provision/"
 
 ssh "$REMOTE" 'bash -s' <<'REMOTE'
@@ -36,15 +48,15 @@ SELECT 'CREATE DATABASE concierge OWNER concierge'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'concierge')\gexec
 SQL
 
-# uv for the appuser user.
+# uv for the service (ssh) user.
 if ! test -x "$HOME/.local/bin/uv"; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# App dirs + env file. Owned by appuser (service user), mode 600 — readable by the
+# App dirs + env file. Owned by the service user, mode 600 — readable by the
 # deploy step (alembic) and by systemd before dropping privileges.
 sudo -n mkdir -p /srv/concierge/app /srv/concierge/blobs /etc/concierge
-sudo -n chown -R appuser:appuser /srv/concierge
+sudo -n chown -R "$(id -un):$(id -gn)" /srv/concierge
 if ! sudo -n test -f /etc/concierge/.env; then
     DBPASS="$(openssl rand -hex 16)"
     printf 'CONCIERGE_DATABASE_URL=postgresql+asyncpg://concierge:%s@127.0.0.1:5432/concierge\nCONCIERGE_QDRANT_URL=http://127.0.0.1:6333\nCONCIERGE_JWT_SECRET=%s\nCONCIERGE_COOKIE_SECURE=false\nCONCIERGE_BLOB_DIR=/srv/concierge/blobs\n' \
@@ -52,7 +64,7 @@ if ! sudo -n test -f /etc/concierge/.env; then
         | sudo -n tee /etc/concierge/.env >/dev/null
     sudo -n -u postgres psql -c "ALTER USER concierge WITH PASSWORD '${DBPASS}'"
 fi
-sudo -n chown appuser:appuser /etc/concierge/.env
+sudo -n chown "$(id -un):$(id -gn)" /etc/concierge/.env
 sudo -n chmod 600 /etc/concierge/.env
 
 # journald: cap log volume (log rotation for concierge + system).
@@ -69,6 +81,9 @@ sudo -n install -m 644 ~/concierge-provision/concierge-backup.service \
 sudo -n install -m 644 ~/concierge-provision/concierge-backup.timer \
     /etc/systemd/system/concierge-backup.timer
 sudo -n install -m 644 -b ~/concierge-provision/Caddyfile /etc/caddy/Caddyfile
+sudo -n sed -i "s/__SERVICE_USER__/$(id -un)/g" \
+    /etc/systemd/system/concierge.service \
+    /etc/systemd/system/concierge-backup.service
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable --now caddy
 sudo -n systemctl enable --now concierge-backup.timer

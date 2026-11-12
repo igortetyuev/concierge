@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Deploy concierge to box: build web -> rsync server+web -> uv sync ->
+# Deploy concierge to the app server: build web -> rsync server+web -> uv sync ->
 # alembic upgrade -> install Caddyfile -> restart services.
 set -euo pipefail
 
-REMOTE="${CONCIERGE_REMOTE:-box}"
-DEST="${CONCIERGE_DEST:-/srv/concierge/app}"
+cd "$(dirname "$0")"
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+cd ..
 
-cd "$(dirname "$0")/.."
+REMOTE="${CONCIERGE_REMOTE:?set CONCIERGE_REMOTE in deploy/.env}"
+DOMAIN="${CONCIERGE_DOMAIN:?set CONCIERGE_DOMAIN in deploy/.env}"
+DEST="${CONCIERGE_DEST:-/srv/concierge/app}"
 
 (cd web && pnpm install --frozen-lockfile && pnpm build)
 
@@ -23,8 +31,12 @@ rsync -az --delete web/dist/ "$REMOTE:$DEST/web/"
 
 rsync -az deploy/ "$REMOTE:$DEST/deploy/"
 
-scp deploy/Caddyfile deploy/concierge-backup.service deploy/concierge-backup.timer \
-    "$REMOTE:~/"
+CADDY_TMP="$(mktemp)"
+sed "s/__DOMAIN__/${DOMAIN}/g" deploy/Caddyfile > "$CADDY_TMP"
+scp "$CADDY_TMP" "$REMOTE:~/Caddyfile"
+rm -f "$CADDY_TMP"
+
+scp deploy/concierge-backup.service deploy/concierge-backup.timer "$REMOTE:~/"
 
 ssh "$REMOTE" "cd $DEST/server && \
     \$HOME/.local/bin/uv sync --frozen --no-dev && \

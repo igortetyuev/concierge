@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Daily backup on box: pg_dump + blobs rsync + per-collection Qdrant snapshots
+# Daily backup on the app server: pg_dump + blobs rsync + per-collection Qdrant snapshots
 # -> /srv/concierge/backups/<YYYY-MM-DD>/ ; keeps the last 14 days.
 set -euo pipefail
 
