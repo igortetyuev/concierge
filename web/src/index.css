@@ -90,6 +90,17 @@ select {
   color: inherit;
 }
 
+/* Non-text controls: no text selection or iOS callout on long-press. */
+button,
+summary,
+.attach-chip,
+.tool-chip,
+.avatar {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 /* iOS Safari zooms on inputs < 16px */
 input,
 textarea,
@@ -1627,6 +1638,10 @@ a {
 
 /* ---------- voice quick session ---------- */
 
+.mic-btn {
+  touch-action: none;
+}
+
 .vq-fab {
   position: absolute;
   right: 16px;
@@ -1647,6 +1662,17 @@ a {
   user-select: none;
 }
 
+.vq-fab.recording {
+  background: var(--danger);
+  animation: vq-pulse 1.2s infinite;
+}
+
+@keyframes vq-pulse {
+  50% {
+    box-shadow: 0 0 0 12px rgba(245, 59, 58, 0.15);
+  }
+}
+
 @media (max-width: 767px) {
   .vq-fab {
     display: inline-flex;
@@ -1655,118 +1681,6 @@ a {
   .vq-head {
     display: none;
   }
-}
-
-.vq-overlay {
-  position: fixed;
-  top: var(--vvo);
-  right: 0;
-  left: 0;
-  height: var(--vvh);
-  z-index: 60;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  background: var(--scrim);
-}
-
-@media (min-width: 768px) {
-  .vq-overlay {
-    align-items: center;
-  }
-}
-
-.vq-card {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  width: min(420px, 100%);
-  padding: 20px;
-  padding-bottom: calc(20px + env(safe-area-inset-bottom));
-  border: 1px solid var(--border);
-  border-radius: 16px 16px 0 0;
-  background: var(--surface);
-}
-
-@media (min-width: 768px) {
-  .vq-card {
-    border-radius: 16px;
-    padding-bottom: 20px;
-  }
-}
-
-.vq-level {
-  height: 8px;
-  border-radius: 4px;
-  background: var(--surface-2);
-  overflow: hidden;
-}
-
-.vq-level > span {
-  display: block;
-  height: 100%;
-  border-radius: 4px;
-  background: var(--accent);
-  transition: width 0.1s linear;
-}
-
-.vq-time {
-  text-align: center;
-  font-size: 1.2rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.vq-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.vq-actions .btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.vq-hint {
-  font-size: 0.85rem;
-  text-align: center;
-}
-
-.vq-status {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 60px;
-}
-
-.vq-cfg {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.vq-cfg label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-  min-width: 140px;
-  font-size: 0.8rem;
-  color: var(--text-2);
-}
-
-.vq-cfg select,
-.vq-cfg input {
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
 }
 
 .vq-notice {

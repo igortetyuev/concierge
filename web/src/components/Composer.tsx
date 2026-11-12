@@ -542,7 +542,7 @@ export default function Composer({ convId }: { convId: number }) {
           <IconCamera />
         </button>
         <button
-          className={`icon-btn${recording ? ' recording' : ''}`}
+          className={`icon-btn mic-btn${recording ? ' recording' : ''}`}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId)
             void startRecording()
