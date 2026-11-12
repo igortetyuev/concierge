@@ -63,13 +63,17 @@ export function initials(name: string): string {
 }
 
 /** Pin the app to the visual viewport: keeps the shell aligned with the
- *  visible area when iOS Safari pans it for the on-screen keyboard. */
+ *  visible area when iOS Safari pans it for the on-screen keyboard. The
+ *  offset is applied only while the keyboard is up (vv is shorter than
+ *  the layout viewport): during rubber-band overscroll iOS pans the vv
+ *  too, and following offsetTop then drags the fixed chrome around. */
 export function bindKeyboardInset(): void {
   const vv = window.visualViewport
   if (!vv) return
   const update = () => {
     const root = document.documentElement.style
-    root.setProperty('--vvo', `${Math.round(vv.offsetTop)}px`)
+    const keyboardOpen = vv.height < window.innerHeight - 100
+    root.setProperty('--vvo', keyboardOpen ? `${Math.round(vv.offsetTop)}px` : '0px')
     root.setProperty('--vvh', `${Math.round(vv.height)}px`)
   }
   update()
