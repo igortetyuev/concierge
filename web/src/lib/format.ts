@@ -62,14 +62,17 @@ export function initials(name: string): string {
     .join('')
 }
 
-/** Lift the app above the on-screen keyboard on mobile (visualViewport). */
+/** Pin the app to the visual viewport: keeps the shell aligned with the
+ *  visible area when iOS Safari pans it for the on-screen keyboard. */
 export function bindKeyboardInset(): void {
   const vv = window.visualViewport
   if (!vv) return
   const update = () => {
-    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
-    document.documentElement.style.setProperty('--kb', `${Math.round(kb)}px`)
+    const root = document.documentElement.style
+    root.setProperty('--vvo', `${Math.round(vv.offsetTop)}px`)
+    root.setProperty('--vvh', `${Math.round(vv.height)}px`)
   }
+  update()
   vv.addEventListener('resize', update)
   vv.addEventListener('scroll', update)
 }

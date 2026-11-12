@@ -25,7 +25,8 @@
   --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
   --radius: 10px;
   --font-code: 'SF Mono', 'Roboto Mono', ui-monospace, Consolas, monospace;
-  --kb: 0px;
+  --vvo: 0px;
+  --vvh: 100dvh;
 
   color-scheme: light;
   font: 15px/1.5 'Inter', ui-sans-serif, system-ui, sans-serif;
@@ -62,10 +63,19 @@
 }
 
 html,
-body,
-#root {
+body {
   height: 100%;
   margin: 0;
+}
+
+/* Pinned to the visual viewport so iOS keyboard pan/bounce can't shift chrome */
+#root {
+  position: fixed;
+  top: var(--vvo);
+  right: 0;
+  left: 0;
+  height: var(--vvh);
+  overflow: hidden;
 }
 
 body {
@@ -249,7 +259,7 @@ a {
 .splash {
   display: grid;
   place-items: center;
-  height: 100dvh;
+  height: 100%;
   font-size: 1.4rem;
   font-weight: 700;
   color: var(--accent-text);
@@ -260,12 +270,14 @@ a {
 .auth {
   display: grid;
   place-items: center;
-  min-height: 100dvh;
+  height: 100%;
+  overflow-y: auto;
   padding: 20px;
   padding-bottom: calc(20px + env(safe-area-inset-bottom));
 }
 
 .auth-card {
+  margin: auto;
   width: min(400px, 100%);
   padding: 28px;
   border: 1px solid var(--border);
@@ -322,7 +334,7 @@ a {
 
 .shell {
   display: flex;
-  height: calc(100dvh - var(--kb));
+  height: 100%;
   overflow: hidden;
 }
 
@@ -411,7 +423,9 @@ a {
 
   .shell.show-details .shell-details {
     position: fixed;
-    inset: 0 0 0 auto;
+    top: var(--vvo);
+    right: 0;
+    height: var(--vvh);
     z-index: 40;
     display: flex;
     width: min(340px, 92vw);
@@ -422,7 +436,10 @@ a {
 
   .details-scrim {
     position: fixed;
-    inset: 0;
+    top: var(--vvo);
+    right: 0;
+    left: 0;
+    height: var(--vvh);
     z-index: 39;
     border: 0;
     background: var(--scrim);
@@ -1308,7 +1325,10 @@ a {
 
 .lb {
   position: fixed;
-  inset: 0;
+  top: var(--vvo);
+  right: 0;
+  left: 0;
+  height: var(--vvh);
   z-index: 70;
   display: flex;
   flex-direction: column;
@@ -1409,7 +1429,10 @@ a {
 
 .modal-scrim {
   position: fixed;
-  inset: 0;
+  top: var(--vvo);
+  right: 0;
+  left: 0;
+  height: var(--vvh);
   z-index: 50;
   display: grid;
   place-items: center;
@@ -1419,7 +1442,7 @@ a {
 
 .modal {
   width: min(440px, 100%);
-  max-height: calc(100dvh - 40px);
+  max-height: calc(var(--vvh) - 40px);
   overflow-y: auto;
   padding: 20px;
   border-radius: var(--radius);
@@ -1596,7 +1619,10 @@ a {
 
 .vq-overlay {
   position: fixed;
-  inset: 0;
+  top: var(--vvo);
+  right: 0;
+  left: 0;
+  height: var(--vvh);
   z-index: 60;
   display: flex;
   align-items: flex-end;
@@ -1706,7 +1732,7 @@ a {
 .vq-notice {
   position: fixed;
   left: 50%;
-  bottom: calc(90px + env(safe-area-inset-bottom));
+  bottom: calc(100dvh - var(--vvo) - var(--vvh) + 90px + env(safe-area-inset-bottom));
   z-index: 70;
   transform: translateX(-50%);
   padding: 10px 18px;

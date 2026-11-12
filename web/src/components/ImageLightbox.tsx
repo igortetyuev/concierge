@@ -124,7 +124,7 @@ export default function ImageLightbox({ images, initialIndex, initialUrl, onClos
               onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')}
               style={
                 zoom === 'fit' || !nat.w
-                  ? { maxWidth: 'calc(100vw - 48px)', maxHeight: 'calc(100dvh - 140px)' }
+                  ? { maxWidth: 'calc(100vw - 48px)', maxHeight: 'calc(var(--vvh) - 140px)' }
                   : { width: nat.w * zoom, maxWidth: 'none', maxHeight: 'none' }
               }
             />
