@@ -80,6 +80,10 @@ export const IconMic = svg(
   'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z',
   'M19 10v2a7 7 0 0 1-14 0v-2M12 19v4',
 )
+export const IconSpeaker = svg(
+  'M11 5L6 9H2v6h4l5 4V5z',
+  'M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14',
+)
 export const IconStop = svg('M6 6h12v12H6z')
 export const IconCopy = svg(
   'M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',

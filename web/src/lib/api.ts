@@ -84,6 +84,12 @@ export interface VoiceQuickOut {
   transcript: string | null
 }
 
+export interface VoiceMessageOut {
+  status: 'ok' | 'empty_transcript' | 'stt_failed'
+  message: MessageOut | null
+  transcript: string | null
+}
+
 export interface TelegramLinkOut {
   linked: boolean
   telegram_username: string | null
@@ -446,6 +452,24 @@ export const apiClient = {
     const form = new FormData()
     form.append('file', file, name)
     return api<VoiceQuickOut>('/conversations/voice-quick', { method: 'POST', body: form })
+  },
+  voiceMessage: (
+    conversationId: number,
+    file: Blob,
+    name: string,
+    text: string,
+    attachmentIds: number[],
+    clientMsgId: string,
+  ) => {
+    const form = new FormData()
+    form.append('file', file, name)
+    if (text) form.append('text', text)
+    for (const id of attachmentIds) form.append('attachment_ids', String(id))
+    form.append('client_msg_id', clientMsgId)
+    return api<VoiceMessageOut>(`/conversations/${conversationId}/voice-message`, {
+      method: 'POST',
+      body: form,
+    })
   },
   listUserSettings: () => api<Record<string, unknown>>('/settings/user'),
   putUserSetting: (key: string, value: unknown) =>

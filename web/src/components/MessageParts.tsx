@@ -8,7 +8,7 @@ import { $attachments, setAttachment } from '../store/attachments'
 import { $composerPrefill } from '../store/ui'
 import ImageLightbox from './ImageLightbox'
 import Markdown from './Markdown'
-import { IconCheck, IconClose, IconCopy, IconFile, IconTool } from './icons'
+import { IconCheck, IconClose, IconCopy, IconFile, IconSpeaker, IconTool } from './icons'
 
 export async function copyText(text: string): Promise<boolean> {
   try {
@@ -275,6 +275,65 @@ function AttachmentPart({ part, convId, origin, hasText, autoplay, onOpenImage }
   )
 }
 
+/** Transcribed user text (voice message): plain text + a speaker button that
+ * expands into an audio player on demand. */
+function VoiceTextPart({
+  part,
+  attachmentId,
+  mentions,
+}: {
+  part: MessagePart
+  attachmentId: number
+  mentions?: string[]
+}) {
+  const [open, setOpen] = useState(false)
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!open || url != null || failed) return
+    let objectUrl: string | null = null
+    let alive = true
+    void fetchAttachmentObjectUrl(attachmentId)
+      .then((u) => {
+        objectUrl = u
+        if (alive) setUrl(u)
+      })
+      .catch(() => {
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [open, url, failed, attachmentId])
+
+  return (
+    <div className="voice-msg">
+      <div className="voice-msg-row">
+        <Markdown text={String(part.text ?? '')} mentions={mentions} />
+        <button
+          className={`voice-btn${open ? ' open' : ''}`}
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? 'Скрыть запись' : 'Прослушать запись'}
+          title="Прослушать запись"
+        >
+          <IconSpeaker size={15} />
+        </button>
+      </div>
+      {open &&
+        (url ? (
+          // eslint-disable-next-line jsx-a11y/media-has-caption -- transcript is the text itself
+          <audio className="msg-audio" controls autoPlay src={url} />
+        ) : (
+          <span className="part-attachment muted">
+            {failed ? 'аудио недоступно' : 'загрузка…'}
+          </span>
+        ))}
+    </div>
+  )
+}
+
 interface MessagePartsProps {
   parts: MessagePart[]
   convId?: number
@@ -304,6 +363,20 @@ export default function MessageParts({
     <>
       {parts.map((p, i) => {
         if (p.type === 'text') {
+          const voiceId =
+            typeof p.voice_attachment_id === 'number'
+              ? p.voice_attachment_id
+              : null
+          if (voiceId != null) {
+            return (
+              <VoiceTextPart
+                key={i}
+                part={p}
+                attachmentId={voiceId}
+                mentions={mentions}
+              />
+            )
+          }
           if (p.transcribed === true && convId != null) {
             return (
               <div key={i} className="transcribed">

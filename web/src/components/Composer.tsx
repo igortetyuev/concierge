@@ -16,12 +16,13 @@ import { uuid } from '../lib/uuid'
 import { loadPromptHistory, pushPromptHistory } from '../lib/promptHistory'
 import { sendTyping } from '../lib/ws'
 import { $conversations } from '../store/conversations'
-import { sendParts, sendMessage } from '../store/messages'
+import { applyMessageCreated, sendParts, sendMessage } from '../store/messages'
 import { $composerPrefill } from '../store/ui'
-import { IconCamera, IconClose, IconMic, IconPaperclip, IconSend, IconStop } from './icons'
+import { IconCamera, IconClose, IconMic, IconPaperclip, IconSend } from './icons'
 
 const TYPING_INTERVAL = 3000
 const RECORD_LIMIT_S = 120
+const RECORD_MIN_MS = 400
 
 interface Staged {
   key: string
@@ -57,11 +58,17 @@ export default function Composer({ convId }: { convId: number }) {
   const [recording, setRecording] = useState(false)
   const [recSeconds, setRecSeconds] = useState(0)
   const [recNotice, setRecNotice] = useState<string | null>(null)
+  const [sendingVoice, setSendingVoice] = useState(false)
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<HTMLInputElement>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const recDiscardRef = useRef(false)
+  const recAbortRef = useRef(false)
+  const recStartedAt = useRef(0)
+  const stagedRef = useRef<Staged[]>([])
+  stagedRef.current = staged
   const lastTyping = useRef(0)
   const historyRef = useRef<string[] | null>(null)
   const histIdxRef = useRef(-1)
@@ -128,9 +135,21 @@ export default function Composer({ convId }: { convId: number }) {
     return () => clearInterval(t)
   }, [recording])
 
+  // Escape cancels an in-progress hold-to-record.
+  useEffect(() => {
+    if (!recording) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') stopRecording(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [recording])
+
   useEffect(() => () => {
     for (const s of staged) if (s.previewUrl) URL.revokeObjectURL(s.previewUrl)
+    recDiscardRef.current = true
     recorderRef.current?.stop()
+    recAbortRef.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -233,8 +252,15 @@ export default function Composer({ convId }: { convId: number }) {
       setRecNotice(blocked)
       return
     }
+    recAbortRef.current = false
+    recDiscardRef.current = false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (recAbortRef.current) {
+        // Released before getUserMedia resolved — don't record at all.
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       const rec = new MediaRecorder(stream, { mimeType: pickAudioMime() || undefined })
       chunksRef.current = []
       rec.ondataavailable = (e) => {
@@ -243,9 +269,12 @@ export default function Composer({ convId }: { convId: number }) {
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        const ext = audioExt(rec.mimeType || '')
-        if (blob.size) stage(blob, `voice.${ext}`)
+        const tooShort = Date.now() - recStartedAt.current < RECORD_MIN_MS
+        if (!recDiscardRef.current && !tooShort && blob.size) {
+          void sendVoice(blob, rec.mimeType || 'audio/webm')
+        }
       }
+      recStartedAt.current = Date.now()
       recorderRef.current = rec
       setRecSeconds(0)
       setRecording(true)
@@ -255,10 +284,55 @@ export default function Composer({ convId }: { convId: number }) {
     }
   }
 
-  function stopRecording() {
-    recorderRef.current?.stop()
+  function stopRecording(send = true) {
+    if (recorderRef.current == null) {
+      // Release raced the async start: abort it and drop the take.
+      recAbortRef.current = true
+      recDiscardRef.current = !send
+      return
+    }
+    recDiscardRef.current = !send
+    recorderRef.current.stop()
     recorderRef.current = null
     setRecording(false)
+  }
+
+  async function sendVoice(blob: Blob, mime: string) {
+    setSendingVoice(true)
+    const draft = text.trim()
+    const ready = stagedRef.current.filter((s) => s.attachment != null)
+    try {
+      const resp = await apiClient.voiceMessage(
+        convId,
+        blob,
+        `voice.${audioExt(mime)}`,
+        draft,
+        ready.map((s) => (s.attachment as AttachmentOut).id),
+        uuid(),
+      )
+      if (resp.message != null) {
+        applyMessageCreated(resp.message)
+        setText('')
+        setMention(null)
+        requestAnimationFrame(autoresize)
+        for (const s of ready) if (s.previewUrl) URL.revokeObjectURL(s.previewUrl)
+        setStaged((list) => list.filter((s) => s.attachment == null))
+        if (draft) {
+          pushPromptHistory(draft)
+          historyRef.current = null
+        }
+        histIdxRef.current = -1
+      }
+      if (resp.status === 'stt_failed') {
+        setRecNotice('Ошибка распознавания речи')
+      } else if (resp.status === 'empty_transcript' && resp.message == null) {
+        setRecNotice('Ничего не расслышал — попробуйте ещё раз')
+      }
+    } catch {
+      setRecNotice('Ошибка отправки')
+    } finally {
+      setSendingVoice(false)
+    }
   }
 
   const uploading = staged.some((s) => s.attachment == null && !s.error)
@@ -467,29 +541,29 @@ export default function Composer({ convId }: { convId: number }) {
         >
           <IconCamera />
         </button>
-        {recording ? (
-          <button
-            className="icon-btn recording"
-            onClick={stopRecording}
-            aria-label="Остановить запись"
-            title={`Запись ${recSeconds} с — стоп`}
-          >
-            <IconStop />
-          </button>
-        ) : (
-          <button
-            className="icon-btn"
-            onClick={() => void startRecording()}
-            aria-label="Голосовое сообщение"
-            title="Голосовое сообщение"
-          >
-            <IconMic />
-          </button>
-        )}
+        <button
+          className={`icon-btn${recording ? ' recording' : ''}`}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId)
+            void startRecording()
+          }}
+          onPointerUp={() => stopRecording(true)}
+          onPointerCancel={() => stopRecording(false)}
+          onContextMenu={(e) => e.preventDefault()}
+          disabled={sendingVoice}
+          aria-label="Голосовое сообщение"
+          title="Удерживайте для записи голосового сообщения"
+        >
+          <IconMic />
+        </button>
         {recording ? (
           <span className="rec-timer">
             <span className="rec-dot" /> {Math.floor(recSeconds / 60)}:
             {String(recSeconds % 60).padStart(2, '0')}
+          </span>
+        ) : sendingVoice ? (
+          <span className="rec-timer muted">
+            <span className="spinner" /> Распознаю…
           </span>
         ) : (
           <textarea
@@ -516,7 +590,7 @@ export default function Composer({ convId }: { convId: number }) {
         <button
           className="icon-btn send"
           onClick={() => void submit()}
-          disabled={!canSend || recording}
+          disabled={!canSend || recording || sendingVoice}
           aria-label="Отправить"
         >
           <IconSend />

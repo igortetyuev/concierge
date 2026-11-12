@@ -567,6 +567,150 @@ async def voice_quick(
     )
 
 
+class VoiceMessageOut(BaseModel):
+    status: Literal["ok", "empty_transcript", "stt_failed"]
+    message: MessageOut | None = None
+    transcript: str | None = None
+
+
+@router.post("/conversations/{conversation_id}/voice-message")
+async def voice_message(
+    conversation_id: int,
+    user: CurrentUser,
+    session: SessionDep,
+    file: Annotated[UploadFile, File()],
+    text: Annotated[str, Form()] = "",
+    attachment_ids: Annotated[list[int] | None, Form()] = None,
+    client_msg_id: Annotated[str | None, Form()] = None,
+) -> VoiceMessageOut:
+    """Hold-to-talk inside a session: audio -> STT -> user message whose text
+    part carries `voice_attachment_id` for on-demand playback."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    if conv.status != "active":
+        raise HTTPException(409, "conversation is archived")
+
+    max_bytes = media_service.max_upload_bytes(user)
+    if max_bytes <= 0:
+        raise HTTPException(403, "uploads are not allowed for this role")
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(
+            413,
+            f"file exceeds the {max_bytes // (1024 * 1024)} MB upload limit",
+        )
+    if not data:
+        raise HTTPException(400, "empty file")
+    name = file.filename or "voice"
+    mime = file.content_type or "application/octet-stream"
+    if media_service.kind_of(mime, name) != "audio":
+        raise HTTPException(400, "voice-message accepts audio only")
+
+    extra: list[Attachment] = []
+    for aid in dict.fromkeys(attachment_ids or []):
+        att = await session.get(Attachment, aid)
+        if att is None or att.uploaded_by != user.id:
+            raise HTTPException(404, "attachment not found")
+        extra.append(att)
+
+    att, _ = await media_service.create_attachment(
+        session, user, name, mime, data, conv.id
+    )
+    transcript = (await media_service.transcribe(att.id)).strip()
+    await session.refresh(att)
+
+    min_chars = int(
+        await settings_service.get_value(
+            session,
+            user,
+            "voice_quick.min_transcript_chars",
+            VOICE_QUICK_MIN_CHARS_DEFAULT,
+        )
+        or VOICE_QUICK_MIN_CHARS_DEFAULT
+    )
+    stt_done = att.derived.get("status") == "done"
+    spoken = stt_done and len(transcript) >= min_chars
+    typed = text.strip()
+    status: Literal["ok", "empty_transcript", "stt_failed"] = (
+        "ok" if spoken else "empty_transcript" if stt_done else "stt_failed"
+    )
+
+    if not spoken and not typed and not extra and status == "empty_transcript":
+        # Nothing recognized and nothing else to send — keep the session clean.
+        att.conversation_id = None
+        await session.commit()
+        return VoiceMessageOut(status=status, transcript=transcript or None)
+
+    parts: list[dict[str, Any]] = []
+    if spoken:
+        combined = f"{typed} {transcript}" if typed else transcript
+        parts.append(
+            {
+                "type": "text",
+                "text": combined,
+                "transcribed": True,
+                "voice_attachment_id": att.id,
+            }
+        )
+    else:
+        if typed:
+            parts.append({"type": "text", "text": typed})
+        parts.append(
+            {
+                "type": "audio",
+                "attachment_id": att.id,
+                "name": att.original_name,
+                "mime": att.mime,
+            }
+        )
+    for a in extra:
+        await media_service.bind_to_conversation(session, a, conv.id)
+        kind = media_service.kind_of(a.mime, a.original_name)
+        parts.append(
+            {
+                "type": "file" if kind == "other" else kind,
+                "attachment_id": a.id,
+                "name": a.original_name,
+                "mime": a.mime,
+            }
+        )
+
+    msg, created = await service.post_message(
+        session, conv, user, parts, client_msg_id
+    )
+    out = (await _messages_out(session, [msg]))[0]
+    if created:
+        await get_hub().publish(
+            ChannelEvent(
+                "message.created",
+                conv.id,
+                {"message": out.model_dump(mode="json")},
+            )
+        )
+        memory_indexer.kick()
+        if spoken or typed or extra:
+            get_runtime().schedule(conv.id, msg.id)
+    if created and status == "stt_failed":
+        # Keep the audio playable; flag that no transcript was produced.
+        notice = await service.post_system_message(
+            session,
+            conv,
+            [{"type": "text", "text": "Ошибка распознавания речи."}],
+        )
+        notice_out = (await _messages_out(session, [notice]))[0]
+        await get_hub().publish(
+            ChannelEvent(
+                "message.created",
+                conv.id,
+                {"message": notice_out.model_dump(mode="json")},
+            )
+        )
+    return VoiceMessageOut(
+        status=status,
+        message=out,
+        transcript=transcript or None,
+    )
+
+
 class MarkReadBody(BaseModel):
     seq: int = Field(ge=0)
 

@@ -981,6 +981,42 @@ a {
   display: block;
 }
 
+.voice-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.voice-msg-row .md {
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.voice-btn.open {
+  opacity: 1;
+  color: var(--accent-text);
+  border-color: var(--accent-text);
+}
+
+.voice-msg .msg-audio {
+  margin-top: 6px;
+}
+
 .part-caption {
   font-size: 0.85rem;
   color: var(--text-2);
