@@ -4,7 +4,12 @@ import { useNavigate } from 'react-router'
 import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
-import { audioExt, pickAudioMime } from '../lib/audio'
+import {
+  audioExt,
+  micBlockedReason,
+  micErrorMessage,
+  pickAudioMime,
+} from '../lib/audio'
 import { subscribe } from '../lib/ws'
 import { $user } from '../store/auth'
 import { refreshConversation } from '../store/conversations'
@@ -123,7 +128,12 @@ export default function VoiceQuick() {
   }
 
   async function start() {
-    if (phaseRef.current !== 'idle' || typeof MediaRecorder === 'undefined') return
+    if (phaseRef.current !== 'idle') return
+    const blocked = micBlockedReason()
+    if (blocked) {
+      setNotice(blocked)
+      return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const mime = pickAudioMime()
@@ -150,8 +160,8 @@ export default function VoiceQuick() {
       setPhase('recording')
       rec.start()
       startMeter(stream)
-    } catch {
-      setNotice('Нет доступа к микрофону')
+    } catch (err) {
+      setNotice(micErrorMessage(err))
       setPhase('idle')
     }
   }

@@ -87,6 +87,21 @@ sudo -n sed -i "s/__SERVICE_USER__/$(id -un)/g" \
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable --now caddy
 sudo -n systemctl enable --now concierge-backup.timer
+
+# Serve the internal-CA root at /root.crt (created on first TLS use; deploy.sh
+# re-copies it anyway).
+mkdir -p /srv/concierge/app/web
+for _ in 1 2 3 4 5; do
+    sudo -n test -f \
+        /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt \
+        && break
+    sleep 1
+done
+sudo -n install -m 644 \
+    /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt \
+    /srv/concierge/app/web/root.crt \
+    || echo 'warning: caddy root CA not found yet — deploy.sh will retry'
+
 rm -rf ~/concierge-provision
 REMOTE
 

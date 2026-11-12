@@ -4,7 +4,12 @@ import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
 import type { AttachmentOut, MessagePart } from '../lib/api'
-import { audioExt, pickAudioMime } from '../lib/audio'
+import {
+  audioExt,
+  micBlockedReason,
+  micErrorMessage,
+  pickAudioMime,
+} from '../lib/audio'
 import { initials } from '../lib/format'
 import { mentionRegex } from '../lib/mentions'
 import { uuid } from '../lib/uuid'
@@ -51,6 +56,7 @@ export default function Composer({ convId }: { convId: number }) {
   const [staged, setStaged] = useState<Staged[]>([])
   const [recording, setRecording] = useState(false)
   const [recSeconds, setRecSeconds] = useState(0)
+  const [recNotice, setRecNotice] = useState<string | null>(null)
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<HTMLInputElement>(null)
@@ -127,6 +133,12 @@ export default function Composer({ convId }: { convId: number }) {
     recorderRef.current?.stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!recNotice) return
+    const t = setTimeout(() => setRecNotice(null), 4000)
+    return () => clearTimeout(t)
+  }, [recNotice])
 
   // «Исправить и отправить заново» drops the transcript into the composer.
   useEffect(() => {
@@ -216,6 +228,11 @@ export default function Composer({ convId }: { convId: number }) {
   }
 
   async function startRecording() {
+    const blocked = micBlockedReason()
+    if (blocked) {
+      setRecNotice(blocked)
+      return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const rec = new MediaRecorder(stream, { mimeType: pickAudioMime() || undefined })
@@ -233,8 +250,8 @@ export default function Composer({ convId }: { convId: number }) {
       setRecSeconds(0)
       setRecording(true)
       rec.start()
-    } catch {
-      /* mic denied or unavailable */
+    } catch (err) {
+      setRecNotice(micErrorMessage(err))
     }
   }
 
@@ -505,6 +522,11 @@ export default function Composer({ convId }: { convId: number }) {
           <IconSend />
         </button>
       </div>
+      {recNotice && (
+        <div className="vq-notice" role="status">
+          {recNotice}
+        </div>
+      )}
     </div>
   )
 }

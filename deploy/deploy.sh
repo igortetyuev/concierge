@@ -50,5 +50,6 @@ ssh "$REMOTE" "cd $DEST/server && \
     sudo -n systemctl daemon-reload && \
     sudo -n systemctl enable --now concierge-backup.timer && \
     sudo -n systemctl reload caddy && \
+    (sudo -n install -m 644 /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt $DEST/web/root.crt || echo 'warning: caddy root CA not found') && \
     sudo -n systemctl restart concierge.service && \
     systemctl is-active concierge.service"

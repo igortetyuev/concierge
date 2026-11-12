@@ -41,6 +41,11 @@ curl -k https://$CONCIERGE_DOMAIN/healthz   # -> {"db":"ok","qdrant":"ok"}
 Конфигурация приложения на сервере — через env с префиксом `CONCIERGE_`
 (`/etc/concierge/.env` на хосте).
 
+HTTPS — `tls internal` (внутренний CA Caddy). Корневой сертификат отдаётся на
+`/root.crt` (копируется из `…/pki/authorities/local/root.crt` в web-root при
+provision/deploy) — установка на устройства нужна для mic/camera
+(`navigator.mediaDevices` только в secure context).
+
 ## Эмбеддинги
 
 Ollama на отдельном Windows-хосте в LAN: `http://<win-host>:11434/v1`, модель
@@ -61,8 +66,10 @@ cwd `C:\Users\<user>\speaches-home`, лог `speaches.log`):
 (алиас `whisper-1`), Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
 firewall-правило для порта 8000. Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
 только с неиспользуемыми aiortc/gradio).
-TODO: привязать capability `stt` → provider `openai-compatible` base_url
-`http://<win-host>:8000/v1`, model `whisper-1` (и `tts` → model `tts-1`, после проверки голосов Kokoro).
+На сервере провайдер `speaches-lan` (kind `openai-compatible`, base_url
+`http://<win-host>:8000/v1`); capability `stt` привязана к нему как `whisper-1`
+(params `{"language": "ru"}`).
+TODO: привязать capability `tts` → `speaches-lan`, model `tts-1` (после проверки голосов Kokoro).
 
 ## Именованные модели («спроси …»)
 

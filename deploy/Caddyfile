@@ -11,6 +11,12 @@
 		-Server
 	}
 
+	# Caddy internal-CA root, copied into the web root by deploy — install on
+	# devices to trust https://__DOMAIN__
+	@rootcert path /root.crt
+	header @rootcert Content-Type application/x-x509-ca-cert
+	header @rootcert Content-Disposition "attachment; filename=root.crt"
+
 	# API + WebSocket: /api/* -> app root (e.g. /api/auth/login -> /auth/login)
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:8000
