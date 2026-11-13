@@ -1,8 +1,10 @@
 import * as ws from '../lib/ws'
+import { api } from '../lib/api'
 import type { AttachmentOut, MessageOut } from '../lib/api'
 import { setAttachment } from './attachments'
 import {
   $activeId,
+  $speakerOnline,
   applyMessageToList,
   loadConversations,
   markRead,
@@ -26,6 +28,7 @@ import {
 
 let connected = false
 let pollTimer: ReturnType<typeof setInterval> | undefined
+let probeTimer: ReturnType<typeof setInterval> | undefined
 
 export function connectRealtime(): void {
   if (connected) return
@@ -37,12 +40,27 @@ export function connectRealtime(): void {
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') void resync()
   }, 60_000)
+  void probeSpeaker()
+  probeTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') void probeSpeaker()
+  }, 30_000)
 }
 
 export function disconnectRealtime(): void {
   connected = false
   if (pollTimer) clearInterval(pollTimer)
+  if (probeTimer) clearInterval(probeTimer)
   ws.stop()
+  $speakerOnline.set(false)
+}
+
+async function probeSpeaker(): Promise<void> {
+  try {
+    const { online } = await api<{ online: boolean }>('/speaker/status')
+    $speakerOnline.set(online)
+  } catch {
+    $speakerOnline.set(false)
+  }
 }
 
 async function resync(): Promise<void> {

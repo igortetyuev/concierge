@@ -238,6 +238,10 @@ a {
   box-shadow: 0 0 0 2px var(--ok);
 }
 
+.avatar.device-online {
+  box-shadow: 0 0 0 1px #e6c200;
+}
+
 .badge {
   min-width: 20px;
   height: 20px;

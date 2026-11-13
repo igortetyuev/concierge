@@ -7,6 +7,7 @@ import {
   $conversations,
   $maxSeq,
   $online,
+  $speakerOnline,
   $readSeqs,
   $users,
   addMember,
@@ -26,6 +27,7 @@ export default function DetailsPanel({ convId }: { convId: number }) {
   const conv = useStore($conversations).find((c) => c.id === convId)
   const users = useStore($users)
   const online = useStore($online)[convId] ?? []
+  const speakerOnline = useStore($speakerOnline)
   const readSeqs = useStore($readSeqs)[convId] ?? {}
   const maxSeq = useStore($maxSeq)[convId] ?? 0
 
@@ -142,7 +144,11 @@ export default function DetailsPanel({ convId }: { convId: number }) {
           )}
           {conv.members.map((m) => (
             <div key={m.user_id} className="member-row">
-              <span className={`avatar small${online.includes(m.user_id) ? ' online' : ''}`}>
+              <span
+                className={`avatar small${online.includes(m.user_id) ? ' online' : ''}${
+                  m.username === 'speaker' && speakerOnline ? ' device-online' : ''
+                }`}
+              >
                 {initials(m.display_name)}
               </span>
               <span className="member-name">
