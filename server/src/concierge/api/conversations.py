@@ -29,6 +29,7 @@ from concierge.conversations.models import Conversation, ConversationMember, Mes
 from concierge.core import audit
 from concierge.core.ratelimit import client_ip
 from concierge.media import service as media_service
+from concierge.media import speaker as speaker_service
 from concierge.media.models import Attachment
 from concierge.memory import indexer as memory_indexer
 from concierge.memory import store as memory_store
@@ -677,7 +678,8 @@ async def voice_quick(
             "mime": att.mime,
         },
     ]
-    msg, _ = await service.post_message(session, conv, user, parts, None)
+    author = await speaker_service.speaker_owner(session, att) or user
+    msg, _ = await service.post_message(session, conv, author, parts, None)
     if len(transcript) <= VOICE_QUICK_TITLE_MAX:
         # Short request: the transcript itself is the title; longer ones get
         # a chat_fast-generated title after the run (runtime._ensure_title).
@@ -828,8 +830,9 @@ async def voice_message(
             }
         )
 
+    author = await speaker_service.speaker_owner(session, att) or user
     msg, created = await service.post_message(
-        session, conv, user, parts, client_msg_id
+        session, conv, author, parts, client_msg_id
     )
     out = (await _messages_out(session, [msg]))[0]
     if created:

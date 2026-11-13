@@ -16,6 +16,7 @@ from concierge.agent.models import (
 from concierge.auth import security
 from concierge.auth.dependencies import SessionDep, require
 from concierge.auth.models import Role, User
+from concierge.channels import ChannelEvent, get_hub
 from concierge.channels.telegram import gateway as tg_gateway
 from concierge.channels.telegram import service as tg_service
 from concierge.channels.telegram.models import TelegramBinding, TelegramLink
@@ -1250,9 +1251,16 @@ async def list_audit(
 # ---------- voices (speaker-ID) ----------
 
 
+async def _invalidate_convs(conv_ids: set[int]) -> None:
+    hub = get_hub()
+    for cid in conv_ids:
+        await hub.publish(ChannelEvent("messages.invalidate", cid, {}))
+
+
 class VoicePatch(BaseModel):
     label: str | None = None
     user_id: int | None = None
+    authenticated: bool | None = None
 
 
 class VoiceMergeIn(BaseModel):
@@ -1268,6 +1276,7 @@ class VoiceOut(BaseModel):
     label: str
     user_id: int | None
     user_name: str | None
+    authenticated: bool
     sample_count: int
     sample_attachment_id: int | None
     last_heard_at: Any
@@ -1297,6 +1306,7 @@ async def list_voices(_: ManageUsers, session: SessionDep) -> list[VoiceOut]:
             label=v.label,
             user_id=v.user_id,
             user_name=uname,
+            authenticated=v.authenticated,
             sample_count=v.sample_count,
             sample_attachment_id=v.sample_attachment_id,
             last_heard_at=v.last_heard_at,
@@ -1325,6 +1335,15 @@ async def patch_voice(
         if uid is not None and await session.get(User, uid) is None:
             raise HTTPException(404, "user not found")
         voice.user_id = uid
+    if "authenticated" in data:
+        voice.authenticated = bool(data["authenticated"])
+    conv_ids = set()
+    if "label" in data or "user_id" in data:
+        conv_ids = await speaker_service.relabel_speaker(
+            session, voice, source_voice_id=voice.id
+        )
+    if {"authenticated", "user_id"} & set(data):
+        conv_ids |= await speaker_service.authenticate_voice(session, voice)
     audit.record(
         session,
         "admin.voice.patch",
@@ -1335,6 +1354,8 @@ async def patch_voice(
         ip=client_ip(request),
     )
     await session.commit()
+    if conv_ids:
+        await _invalidate_convs(conv_ids)
     uname = None
     if voice.user_id is not None:
         owner = await session.get(User, voice.user_id)
@@ -1344,6 +1365,7 @@ async def patch_voice(
         label=voice.label,
         user_id=voice.user_id,
         user_name=uname,
+        authenticated=voice.authenticated,
         sample_count=voice.sample_count,
         sample_attachment_id=voice.sample_attachment_id,
         last_heard_at=voice.last_heard_at,
@@ -1379,6 +1401,10 @@ async def merge_voice(
     await session.delete(src)
     await session.flush()
     await speaker_service.recompute_centroid(session, into.id)
+    conv_ids = await speaker_service.relabel_speaker(
+        session, into, source_voice_id=voice_id
+    )
+    conv_ids |= await speaker_service.authenticate_voice(session, into)
     audit.record(
         session,
         "admin.voice.merge",
@@ -1389,6 +1415,8 @@ async def merge_voice(
         ip=client_ip(request),
     )
     await session.commit()
+    if conv_ids:
+        await _invalidate_convs(conv_ids)
     return {"ok": True}
 
 
@@ -1491,6 +1519,9 @@ async def add_voice_sample(
     await speaker_service.recompute_centroid(session, voice_id)
     if moved_from is not None:
         await speaker_service.recompute_centroid(session, moved_from)
+    conv_ids = await speaker_service.relabel_speaker(
+        session, voice, attachment_ids={att.id}
+    )
     audit.record(
         session,
         "admin.voice.sample.add",
@@ -1501,6 +1532,8 @@ async def add_voice_sample(
         ip=client_ip(request),
     )
     await session.commit()
+    if conv_ids:
+        await _invalidate_convs(conv_ids)
     return VoiceSampleOut(
         id=sample.id,
         attachment_id=sample.attachment_id,

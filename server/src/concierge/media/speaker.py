@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, select
+from sqlalchemy import String, cast, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.auth.models import User
@@ -184,18 +184,170 @@ async def assign_voice(
         voice.sample_count = await _count_samples(session, voice.id)
     if moved_from is not None:
         await recompute_centroid(session, moved_from)
+        # The sample changed clusters — fix stored speaker snapshots of the
+        # messages that carry this attachment.
+        await relabel_speaker(session, voice, attachment_ids={att.id})
 
-    name = voice.label
-    if voice.user_id is not None:
-        owner = await session.get(User, voice.user_id)
-        if owner is not None:
-            name = owner.display_name
     return {
         "voice_id": voice.id,
         "user_id": voice.user_id,
-        "name": name,
+        "name": await _voice_display_name(session, voice),
         "score": round(score, 4),
     }
+
+
+async def _voice_display_name(session: AsyncSession, voice: Voice) -> str:
+    if voice.user_id is not None:
+        owner = await session.get(User, voice.user_id)
+        if owner is not None:
+            return owner.display_name
+    return voice.label
+
+
+async def relabel_speaker(
+    session: AsyncSession,
+    target: Voice,
+    *,
+    source_voice_id: int | None = None,
+    attachment_ids: set[int] | None = None,
+) -> set[int]:
+    """Rewrite stored `speaker` snapshots so they show `target`'s current
+    attribution (label or mapped user name).
+
+    With `source_voice_id` every snapshot of that voice is rewritten
+    (rename / merge — the stored voice_id is retargeted too); with
+    `attachment_ids` only the snapshots of those attachments (a sample
+    moved between voices). Returns conversation_ids to refresh.
+    """
+    # Lazy: conversations imports the media service at module load.
+    from concierge.conversations.models import Message
+
+    fields = {
+        "voice_id": target.id,
+        "user_id": target.user_id,
+        "name": await _voice_display_name(session, target),
+    }
+    conv_ids: set[int] = set()
+
+    conds = []
+    if source_voice_id is not None:
+        conds.append(
+            cast(Attachment.derived, String).like(
+                f'%"voice_id": {source_voice_id}%'
+            )
+        )
+    if attachment_ids:
+        conds.append(Attachment.id.in_(attachment_ids))
+    if not conds:
+        return conv_ids
+    atts = (
+        await session.execute(select(Attachment).where(or_(*conds)))
+    ).scalars()
+    for att in atts:
+        sp = att.derived.get("speaker")
+        if isinstance(sp, dict) and (
+            source_voice_id is None
+            or sp.get("voice_id") == source_voice_id
+            or att.id in (attachment_ids or set())
+        ):
+            att.derived = {**att.derived, "speaker": {**sp, **fields}}
+
+    msgs = (
+        await session.execute(
+            select(Message).where(
+                cast(Message.parts, String).like('%"speaker"%')
+            )
+        )
+    ).scalars()
+    for msg in msgs:
+        hit = attachment_ids is not None and any(
+            p.get("attachment_id") in attachment_ids for p in msg.parts
+        )
+        changed = False
+        parts = []
+        for part in msg.parts:
+            sp = part.get("speaker")
+            if isinstance(sp, dict) and (
+                hit
+                or (
+                    source_voice_id is not None
+                    and sp.get("voice_id") == source_voice_id
+                )
+            ):
+                parts.append({**part, "speaker": {**sp, **fields}})
+                changed = True
+            else:
+                parts.append(part)
+        if changed:
+            msg.parts = parts
+            conv_ids.add(msg.conversation_id)
+    return conv_ids
+
+
+async def speaker_owner(session: AsyncSession, att: Attachment) -> User | None:
+    """The user an `authenticated`+mapped voice counts as — audio carrying
+    that voice is authored by them (display + run permissions)."""
+    sp = (att.derived or {}).get("speaker")
+    voice_id = sp.get("voice_id") if isinstance(sp, dict) else None
+    if voice_id is None:
+        return None
+    voice = await session.get(Voice, voice_id)
+    if voice is None or not voice.authenticated or voice.user_id is None:
+        return None
+    return await session.get(User, voice.user_id)
+
+
+async def authenticate_attachment(
+    session: AsyncSession, att: Attachment
+) -> set[int]:
+    """Retarget already-posted messages carrying `att` to the authenticated
+    voice's owner (async pipeline: the message predates speaker assignment).
+    Returns conversation_ids to refresh."""
+    # Lazy: conversations imports the media service at module load.
+    from concierge.conversations.models import Message
+
+    owner = await speaker_owner(session, att)
+    if owner is None:
+        return set()
+    conv_ids: set[int] = set()
+    msgs = (
+        await session.execute(
+            select(Message).where(
+                cast(Message.parts, String).like(
+                    f'%"attachment_id": {att.id}%'
+                )
+            )
+        )
+    ).scalars()
+    for msg in msgs:
+        if msg.author_id != owner.id and any(
+            p.get("attachment_id") == att.id for p in msg.parts
+        ):
+            msg.author_id = owner.id
+            conv_ids.add(msg.conversation_id)
+    return conv_ids
+
+
+async def authenticate_voice(session: AsyncSession, voice: Voice) -> set[int]:
+    """Retarget every message attributed to `voice` to its owner — used when
+    the flag/mapping is set on an already-attributed voice."""
+    if not voice.authenticated or voice.user_id is None:
+        return set()
+    conv_ids: set[int] = set()
+    atts = (
+        await session.execute(
+            select(Attachment).where(
+                cast(Attachment.derived, String).like(
+                    f'%"voice_id": {voice.id}%'
+                )
+            )
+        )
+    ).scalars()
+    for att in atts:
+        sp = att.derived.get("speaker")
+        if isinstance(sp, dict) and sp.get("voice_id") == voice.id:
+            conv_ids |= await authenticate_attachment(session, att)
+    return conv_ids
 
 
 async def recompute_centroid(session: AsyncSession, voice_id: int) -> Voice | None:

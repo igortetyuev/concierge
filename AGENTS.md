@@ -49,21 +49,24 @@ provision/deploy) — установка на устройства нужна д
 ## Эмбеддинги
 
 Ollama на отдельном Windows-хосте в LAN: `http://<win-host>:11434/v1`, модель
-`bge-m3` (1024-dim). На сервере capability `embedding` привязана к провайдеру
+`bge-m3` (1024-dim). На хосте NVIDIA GTX 1070 (8 ГБ), модели полностью в VRAM
+(`/api/ps`: `size_vram` == `size`). На сервере capability `embedding` привязана к провайдеру
 `ollama-lan` (bge-m3): коллекции Qdrant `concierge_memory__bgem3` и
 `concierge_messages__bgem3`. Без binding `remember`/`recall` молча деградируют
 (запись в `memory_items` есть, векторов нет) — смотри warning в journald.
 Автозапуск на Windows — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env,
 firewall-правило для порта 11434.
 На сервере заведён провайдер `ollama-lan` (kind `ollama`, тот же base_url); capability `vision`
-привязана к нему как `qwen3-vl:4b-instruct` (CPU-инференс ~10–20 с на картинку).
+привязана к нему как `qwen3-vl:4b-instruct` (инференс на GPU).
 
 ## STT/TTS
 
 Speaches 0.8.3 на том же Windows-хосте (venv `C:\Users\<user>\speaches-venv`,
 cwd `C:\Users\<user>\speaches-home`, лог `speaches.log`):
-`http://<win-host>:8000/v1`, whisper `large-v3-turbo` на CPU
-(алиас `whisper-1`), Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
+`http://<win-host>:8000/v1`, whisper `large-v3-turbo` на GPU
+(`WHISPER__INFERENCE_DEVICE=cuda` в `run-speaches.ps1`, GTX 1070;
+~1 с на короткий клип против ~11 с на CPU; алиас `whisper-1`),
+Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
 firewall-правило для порта 8000. Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
 только с неиспользуемыми aiortc/gradio). В `run-speaches.ps1` выставлен
 `HF_HUB_OFFLINE=1`: faster-whisper при (пере)загрузке модели ходит на
@@ -72,6 +75,13 @@ huggingface.co, и при отвалившейся связи запрос па�
 speaches-ai/Kokoro-82M-v1.0-ONNX) есть в кэше `~/.cache/huggingface/hub`.
 Новые модели при offline-режиме не скачаются — качать вручную
 `snapshot_download` или временно убрать env.
+CUDA для whisper: ctranslate2 на Windows грузит только DLL из своего
+package_dir (`__init__.py` → `os.add_dll_directory`), поэтому
+`cublas*`/`cudnn*`/`nvrtc*` из pip-пакетов `nvidia-cublas-cu12`,
+`nvidia-cudnn-cu12` скопированы в `site-packages\ctranslate2\`.
+При переустановке/апгрейде ctranslate2 — повторить копирование
+(источник: `site-packages\nvidia\{cublas,cudnn,cuda_nvrtc}\bin\*.dll`);
+иначе STT падает 500 «Library cublas64_12.dll is not found».
 На сервере провайдер `speaches-lan` (kind `openai-compatible`, base_url
 `http://<win-host>:8000/v1`); capability `stt` привязана к нему как `whisper-1`
 (params `{"language": "ru"}`).
@@ -104,8 +114,9 @@ firewall-правило 8100.
 "min_duration_s": 1.0}` (калибровать на реальных записях). Клипы короче
 `min_duration_s` не эмбеддятся.
 
-Таблицы (миграция 0011): `voices` (label «Голос N», `user_id` — ручной
-маппинг админа, `centroid` — L2-нормированное среднее сэмплов,
+Таблицы (миграция 0011 + `authenticated` в 0012): `voices` (label «Голос N»,
+`user_id` — ручной маппинг админа, `authenticated` — считать аудио
+пришедшим от этого юзера, `centroid` — L2-нормированное среднее сэмплов,
 `sample_count`, `sample_attachment_id` — образец для прослушивания,
 `last_heard_at`), `voice_samples` (`attachment_id` UNIQUE — повторный
 прогон обновляет строку; кап 300 последних сэмплов на голос). Логика —
@@ -116,14 +127,23 @@ firewall-правило 8100.
 Результат — `derived.speaker` `{"voice_id","user_id","name","score"}`
 (name = display_name замапленного юзера, иначе label), копия в text-парте
 сообщения; в промпте групповой сессии имя голоса подставляется вместо
-имени аккаунта-отправителя (`agent/runtime.py` `_content`) — только
-атрибуция, права остаются у отправителя. В PWA — chip на сообщении;
-`/admin` → «Голоса»: редакт. label, маппинг на пользователя,
+имени аккаунта-отправителя (`agent/runtime.py` `_content`). Галочка
+«аутентифицировать» (`voices.authenticated`, только при замапленном
+юзере) меняет это на настоящее авторство: сообщение пишется с
+`author_id` владельца голоса — лента показывает его имя, а ран выполняется
+с его ролью/правами. Снимок в партах при этом не слепок: PATCH
+(label/маппинг), merge и перенос сэмпла переписывают `speaker` в
+сохранённых `messages.parts` и `attachments.derived`
+(`speaker.relabel_speaker`), а аутентификация и асинхронный пайплайн
+ретаргетят `author_id` уже опубликованных сообщений
+(`speaker.authenticate_attachment`); затронутым сессиям шлётся
+`messages.invalidate` — открытый чат перечитывает хвост (`resyncTail`).
+Снятие галочки историю не откатывает. В PWA — chip на сообщении;
+`/admin` → «Голоса»: редакт. label, маппинг, галочка аутентификации,
 прослушивание образца, merge голосов, управление сэмплами
-(REST `/admin/voices*`, депс `manage_users`). Строки в старых
-сообщениях при пере-маппинге не переписываются (слепок на момент
-отправки). Backfill по существующим аудио — `concierge backfill-speaker
-[--limit N] [--conversation-id ID]` (идемпотентен).
+(REST `/admin/voices*`, депс `manage_users`). Backfill по существующим
+аудио — `concierge backfill-speaker [--limit N] [--conversation-id ID]`
+(идемпотентен).
 
 ## Именованные модели («спроси …»)
 

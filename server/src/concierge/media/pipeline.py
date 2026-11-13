@@ -84,9 +84,11 @@ class MediaPipeline:
                 return
             att.derived = {**att.derived, "status": "processing"}
             await session.commit()
+            conv_ids: set[int] = set()
             try:
                 extra = await self._extract(session, att, user)
                 att.derived = {**att.derived, **extra, "status": "done"}
+                conv_ids = await speaker.authenticate_attachment(session, att)
             except MediaSkippedError as skip:
                 att.derived = {
                     **att.derived,
@@ -102,6 +104,9 @@ class MediaPipeline:
                 }
             await session.commit()
         await self._publish(att)
+        hub = get_hub()
+        for cid in conv_ids:
+            await hub.publish(ChannelEvent("messages.invalidate", cid, {}))
 
     async def _extract(
         self, session: AsyncSession, att: Attachment, user: User

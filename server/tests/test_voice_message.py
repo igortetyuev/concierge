@@ -8,6 +8,7 @@ from concierge.agent.runtime import get_runtime
 from concierge.auth.models import User
 from concierge.conversations.models import Conversation
 from concierge.core import db
+from concierge.media.models import Voice
 from tests.conftest import auth, login, make_user
 from tests.test_media import _add_provider, _sine, needs_ffmpeg
 
@@ -107,6 +108,40 @@ async def test_voice_message_speaker_part(
     part = resp.json()["message"]["parts"][0]
     assert part["speaker"]["voice_id"] == 1
     assert part["speaker"]["name"] == "Голос 1"
+    await get_runtime().wait_idle()
+
+
+async def test_voice_message_authenticated_author(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """An authenticated+mapped voice makes the message authored by its user."""
+    text = "включи проектор в гостиной и приглуши свет"
+    await _add_provider("stt", {"transcript": text})
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
+    device = await make_user("wall", "adult")
+    owner = await make_user("mom", "adult")
+    token = await login(client, "wall")
+    cid = await _conv(client, token)
+    async with db.get_sessionmaker()() as session:
+        session.add(
+            Voice(
+                label="Мама",
+                user_id=owner.id,
+                authenticated=True,
+                centroid=[1.0, 0.0, 0.0],
+                sample_count=1,
+            )
+        )
+        await session.commit()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _sine(Path(tmp) / "v.m4a", ["-c:a", "aac"], seconds=2)
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["message"]
+    assert msg["author_id"] == owner.id
+    assert device.id != owner.id
     await get_runtime().wait_idle()
 
 

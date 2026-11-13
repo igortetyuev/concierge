@@ -32,6 +32,7 @@ class Voice(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     label: Mapped[str] = mapped_column(String(64))
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    authenticated: Mapped[bool] = mapped_column(default=False)
     centroid: Mapped[list[float]] = mapped_column(JSONBType, default=list)
     sample_count: Mapped[int] = mapped_column(default=0)
     sample_attachment_id: Mapped[int | None] = mapped_column(

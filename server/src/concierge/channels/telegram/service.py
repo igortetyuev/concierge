@@ -30,6 +30,7 @@ from concierge.conversations.models import Conversation, ConversationMember
 from concierge.core import audit, ratelimit
 from concierge.core.db import get_sessionmaker, utcnow
 from concierge.media import service as media_service
+from concierge.media import speaker as speaker_service
 from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.settings import service as settings_service
@@ -191,11 +192,11 @@ class TelegramService:
             built = await self._build_parts(session, im, conv, user)
             if built is None:
                 return
-            parts, notice_text = built
+            parts, notice_text, author = built
             msg, created = await conversations.post_message(
                 session,
                 conv,
-                user,
+                author,
                 parts,
                 f"tg:{im.chat_id}:{im.message_id}",
                 source_channel="telegram",
@@ -578,10 +579,12 @@ class TelegramService:
         im: InboundMessage,
         conv: Conversation,
         user: User,
-    ) -> tuple[list[dict[str, Any]], str | None] | None:
-        """Message parts + an optional system-notice text to post after them."""
+    ) -> tuple[list[dict[str, Any]], str | None, User] | None:
+        """Message parts + an optional system-notice text + message author
+        (the authenticated voice's owner overrides the telegram account)."""
         parts: list[dict[str, Any]] = []
         notice: str | None = None
+        author = user
         media = im.media
         if media is not None:
             max_bytes = media_service.max_upload_bytes(user)
@@ -605,6 +608,7 @@ class TelegramService:
             if im.is_private and not im.text.strip() and media.kind == "audio":
                 transcript = (await media_service.transcribe(att.id)).strip()
                 await session.refresh(att)
+                author = await speaker_service.speaker_owner(session, att) or user
                 if transcript:
                     parts.append(
                         {
@@ -630,7 +634,7 @@ class TelegramService:
             and (im.mentioned_bot or im.reply_to_from_bot)
         ):
             parts.append({"type": "mention"})
-        return (parts, notice) if parts else None
+        return (parts, notice, author) if parts else None
 
 
 async def unlink_user(

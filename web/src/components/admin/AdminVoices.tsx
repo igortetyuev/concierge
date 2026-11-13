@@ -79,6 +79,15 @@ export default function AdminVoices() {
     }
   }
 
+  async function toggleAuthenticated(v: VoiceOut, checked: boolean) {
+    try {
+      await apiClient.patchVoice(v.id, { authenticated: checked })
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось сохранить')
+    }
+  }
+
   async function doMerge(from: VoiceOut) {
     const intoId = parseInt(mergeInto, 10)
     if (!Number.isFinite(intoId)) return
@@ -150,6 +159,20 @@ export default function AdminVoices() {
                     </option>
                   ))}
                 </select>
+                <label
+                  className="muted"
+                  title="Аудио этого голоса считается пришедшим от назначенного пользователя"
+                >
+                  <input
+                    type="checkbox"
+                    checked={v.authenticated}
+                    disabled={v.user_id == null}
+                    onChange={(e) =>
+                      void toggleAuthenticated(v, e.target.checked)
+                    }
+                  />{' '}
+                  аутентифицировать
+                </label>
                 <span className="muted">
                   {' '}
                   сэмплов: {v.sample_count} · {fmtDate(v.last_heard_at)}

@@ -118,6 +118,11 @@ function handleEvent(ev: ws.WsEvent): void {
         void refreshPreview(convId)
       }
       break
+    case 'messages.invalidate':
+      // Stored parts were rewritten server-side (voice rename/merge) —
+      // pull the tail again so open chats show fresh speaker names.
+      if (convId != null) void resyncTail(convId)
+      break
     case 'message.delta':
       if (convId != null) applyDelta(convId, ev.run_id as number, String(ev.text ?? ''))
       break

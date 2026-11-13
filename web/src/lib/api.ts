@@ -244,6 +244,7 @@ export interface VoiceOut {
   label: string
   user_id: number | null
   user_name: string | null
+  authenticated: boolean
   sample_count: number
   sample_attachment_id: number | null
   last_heard_at: string | null
@@ -647,8 +648,10 @@ export const apiClient = {
     ),
 
   listVoices: () => api<VoiceOut[]>('/admin/voices'),
-  patchVoice: (id: number, patch: { label?: string; user_id?: number | null }) =>
-    patchFn<VoiceOut>(`/admin/voices/${id}`, patch),
+  patchVoice: (
+    id: number,
+    patch: { label?: string; user_id?: number | null; authenticated?: boolean },
+  ) => patchFn<VoiceOut>(`/admin/voices/${id}`, patch),
   mergeVoice: (id: number, intoId: number) =>
     post<{ ok: boolean }>(`/admin/voices/${id}/merge`, { into_id: intoId }),
   deleteVoice: (id: number) =>
