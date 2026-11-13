@@ -36,12 +36,20 @@ export interface ConversationOut {
   members: MemberOut[]
 }
 
+export interface SpeakerInfo {
+  voice_id: number
+  user_id: number | null
+  name: string
+  score: number
+}
+
 export interface MessagePart {
   type: string
   text?: string
   name?: string
   tool_call_id?: string
   status?: string
+  speaker?: SpeakerInfo
   [key: string]: unknown
 }
 
@@ -74,6 +82,7 @@ export interface AttachmentOut {
   duration_s?: number
   pages?: number
   error?: string
+  speaker?: SpeakerInfo
   created_at: string | null
 }
 
@@ -228,6 +237,25 @@ export interface CodeAgentProject {
   name: string
   path: string
   description?: string
+}
+
+export interface VoiceOut {
+  id: number
+  label: string
+  user_id: number | null
+  user_name: string | null
+  sample_count: number
+  sample_attachment_id: number | null
+  last_heard_at: string | null
+  created_at: string | null
+}
+
+export interface VoiceSampleOut {
+  id: number
+  attachment_id: number
+  attachment_name: string
+  score: number
+  created_at: string | null
 }
 
 export interface MemoryItemOut {
@@ -617,6 +645,24 @@ export const apiClient = {
     api<{ total: number; events: AuditEventOut[] }>(
       `/admin/audit-log?limit=${limit}&offset=${offset}`,
     ),
+
+  listVoices: () => api<VoiceOut[]>('/admin/voices'),
+  patchVoice: (id: number, patch: { label?: string; user_id?: number | null }) =>
+    patchFn<VoiceOut>(`/admin/voices/${id}`, patch),
+  mergeVoice: (id: number, intoId: number) =>
+    post<{ ok: boolean }>(`/admin/voices/${id}/merge`, { into_id: intoId }),
+  deleteVoice: (id: number) =>
+    api<{ ok: boolean }>(`/admin/voices/${id}`, { method: 'DELETE' }),
+  listVoiceSamples: (id: number) =>
+    api<VoiceSampleOut[]>(`/admin/voices/${id}/samples`),
+  addVoiceSample: (id: number, attachmentId: number) =>
+    post<VoiceSampleOut>(`/admin/voices/${id}/samples`, {
+      attachment_id: attachmentId,
+    }),
+  deleteVoiceSample: (id: number, sampleId: number) =>
+    api<{ ok: boolean }>(`/admin/voices/${id}/samples/${sampleId}`, {
+      method: 'DELETE',
+    }),
 
   listInvites: () => api<InviteOut[]>('/invites'),
   createInvite: (roleId: number) =>

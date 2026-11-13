@@ -75,7 +75,55 @@ speaches-ai/Kokoro-82M-v1.0-ONNX) есть в кэше `~/.cache/huggingface/hub
 На сервере провайдер `speaches-lan` (kind `openai-compatible`, base_url
 `http://<win-host>:8000/v1`); capability `stt` привязана к нему как `whisper-1`
 (params `{"language": "ru"}`).
+Whisper на тишине/шуме выдаёт галлюцинации из субтитров («Субтитры сделал
+DimaTorzok», «Редактор субтитров …», «Thanks for watching») — `media/stt.py`
+`_hallucinated` отбрасывает транскрипт целиком, если все сегменты — известные
+артефакты (сравнение lowercase, только буквы/цифры; списки
+`_HALLUCINATION_PHRASES`/`_HALLUCINATION_PREFIXES`, warning в journald).
+Пустой транскрипт → `empty_transcript` в voice-ручках и не создаёт Voice
+(pipeline не вызывает `assign_voice`, чтобы шум не плодил «Голос N»).
 TODO: привязать capability `tts` → `speaches-lan`, model `tts-1` (после проверки голосов Kokoro).
+
+## Speaker-ID
+
+Каждое аудио-вложение (голосовые PWA/Telegram, hold-to-talk esp32home,
+аудиодорожка видео) помимо транскрипта получает voice-embedding
+(`media/pipeline.py` — параллельно со STT на отдельной сессии, деградация
+warning-безопасная). Эмбеддинг считает соседний проект `~/projects/speakerid`
+(FastAPI + SpeechBrain ECAPA-TDNN `speechbrain/spkrec-ecapa-voxceleb`,
+192-dim, torch CPU): `POST /embed` (multipart wav) →
+`{"embedding": [...], "dim": 192}`, `GET /healthz`. Развёртывание на
+Windows-хосте по образцу Speaches: venv + `pip install .`, Run-ключ
+`SpeakerId` → `speakerid.exe` (env `SPEAKERID_PORT`, дефолт 8100;
+`HF_HUB_OFFLINE=1` после первого прогрева — модель ~80 МБ качается с HF),
+firewall-правило 8100.
+
+На сервере провайдер `speaker-lan`, kind `speaker-http`, base_url
+`http://<win-host>:8100`; capability `speaker` привязана к нему, пороги —
+в params биндинга: `{"match_threshold": 0.45, "learn_threshold": 0.60,
+"min_duration_s": 1.0}` (калибровать на реальных записях). Клипы короче
+`min_duration_s` не эмбеддятся.
+
+Таблицы (миграция 0011): `voices` (label «Голос N», `user_id` — ручной
+маппинг админа, `centroid` — L2-нормированное среднее сэмплов,
+`sample_count`, `sample_attachment_id` — образец для прослушивания,
+`last_heard_at`), `voice_samples` (`attachment_id` UNIQUE — повторный
+прогон обновляет строку; кап 300 последних сэмплов на голос). Логика —
+`media/speaker.py`: `assign_voice` матчит по центроидам косинусом;
+ниже `match_threshold` создаёт новый Voice, при `>= learn_threshold`
+сэмпл дообучает центроид (защита от отравления).
+
+Результат — `derived.speaker` `{"voice_id","user_id","name","score"}`
+(name = display_name замапленного юзера, иначе label), копия в text-парте
+сообщения; в промпте групповой сессии имя голоса подставляется вместо
+имени аккаунта-отправителя (`agent/runtime.py` `_content`) — только
+атрибуция, права остаются у отправителя. В PWA — chip на сообщении;
+`/admin` → «Голоса»: редакт. label, маппинг на пользователя,
+прослушивание образца, merge голосов, управление сэмплами
+(REST `/admin/voices*`, депс `manage_users`). Строки в старых
+сообщениях при пере-маппинге не переписываются (слепок на момент
+отправки). Backfill по существующим аудио — `concierge backfill-speaker
+[--limit N] [--conversation-id ID]` (идемпотентен).
 
 ## Именованные модели («спроси …»)
 

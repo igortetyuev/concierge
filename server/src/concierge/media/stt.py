@@ -6,6 +6,7 @@ whisper-compatible servers like OpenAI or faster-whisper-server).
 """
 
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,56 @@ from concierge.auth.models import User
 log = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(120.0, connect=15.0)
+
+# Whisper-family models recite subtitle credits and channel plugs when fed
+# silence/noise ("Субтитры сделал DimaTorzok" is the classic). Transcripts that
+# consist solely of such artifacts — compared lowercase, alphanumeric-only —
+# are dropped as if nothing was said.
+_HALLUCINATION_PHRASES = frozenset({"you", "dimatorzok"})
+_HALLUCINATION_PREFIXES = (
+    "субтитрысделал",
+    "субтитрыделал",
+    "субтитрысоздавал",
+    "субтитрыподогнал",
+    "субтитрыавтор",
+    "редакторсубтитров",
+    "переводсубтитров",
+    "корректора",
+    "спасибозапросмотр",
+    "продолжениеследует",
+    "подписывайтесьнаканал",
+    "подписывайтесьнамойканал",
+    "thanksforwatching",
+    "thankyouforwatching",
+    "pleasesubscribe",
+    "subscribetomychannel",
+    "tobecontinued",
+)
+_SEGMENT_SPLIT = re.compile(r"[.!?\n\r…]+")
+# Initials ("A.Sinetskaya") must not split credit segments at the period.
+_INITIALS = re.compile(r"\b([^\W\d_])\.(?=\s*[^\W\d_])")
+
+
+def _normalized(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _known_artifact(seg: str) -> bool:
+    return seg in _HALLUCINATION_PHRASES or seg.startswith(_HALLUCINATION_PREFIXES)
+
+
+def _hallucinated(text: str) -> bool:
+    """True when the transcript carries no real speech: either no words at all
+    (punctuation/notes only) or every segment is a known noise artifact."""
+    segments = [
+        s
+        for s in (
+            _normalized(x)
+            for x in _SEGMENT_SPLIT.split(_INITIALS.sub(r"\1", text))
+        )
+        if s
+    ]
+    return not segments or all(_known_artifact(s) for s in segments)
 
 
 async def transcribe_audio(
@@ -34,28 +85,33 @@ async def transcribe_audio(
         return None
     kind = provider.kind
     if kind == "test":
-        if "transcript" in binding.params:
-            return str(binding.params["transcript"])
-        return "test transcript"
-    api_key = await provider_api_key(session, user, provider)
-    if kind == "deepgram":
-        return await _deepgram(
-            http_base_url(provider) or "https://api.deepgram.com",
-            binding.model,
-            binding.params.get("language"),
-            api_key,
-            wav_path,
-        )
-    if kind in ("openai", "openai-compatible"):
-        return await _openai_whisper(
-            http_base_url(provider),
-            binding.model,
-            binding.params.get("language"),
-            api_key,
-            wav_path,
-        )
-    log.warning("stt: provider kind %r unsupported", kind)
-    return None
+        text = str(binding.params.get("transcript", "test transcript"))
+    else:
+        api_key = await provider_api_key(session, user, provider)
+        if kind == "deepgram":
+            text = await _deepgram(
+                http_base_url(provider) or "https://api.deepgram.com",
+                binding.model,
+                binding.params.get("language"),
+                api_key,
+                wav_path,
+            )
+        elif kind in ("openai", "openai-compatible"):
+            text = await _openai_whisper(
+                http_base_url(provider),
+                binding.model,
+                binding.params.get("language"),
+                api_key,
+                wav_path,
+            )
+        else:
+            log.warning("stt: provider kind %r unsupported", kind)
+            return None
+    if _hallucinated(text):
+        if text.strip():
+            log.warning("stt: dropped noise transcript %r", text.strip()[:120])
+        return ""
+    return text
 
 
 async def _deepgram(

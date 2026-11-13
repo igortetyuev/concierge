@@ -12,6 +12,7 @@ CAPABILITIES = (
     "embedding",
     "document",
     "code_agent",
+    "speaker",
 )
 
 

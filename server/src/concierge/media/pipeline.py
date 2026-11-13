@@ -19,7 +19,7 @@ from concierge.auth.models import User
 from concierge.channels import ChannelEvent, get_hub
 from concierge.core.config import get_settings
 from concierge.core.db import get_sessionmaker
-from concierge.media import service, stt, vision
+from concierge.media import service, speaker, stt, vision
 from concierge.media.documents import extract_document
 from concierge.media.models import Attachment
 
@@ -119,13 +119,22 @@ class MediaPipeline:
             with tempfile.TemporaryDirectory() as tmp:
                 src = _stage(data, tmp, att.original_name)
                 wav = await _to_wav(src, Path(tmp) / "audio.wav")
-                transcript = await stt.transcribe_audio(session, user, wav)
+                duration, transcript, (vec, params) = await asyncio.gather(
+                    _duration(src),
+                    stt.transcribe_audio(session, user, wav),
+                    _embed_safe(user, wav),
+                )
                 if transcript is None:
                     raise MediaSkippedError("no stt provider bound")
-                return {
+                result: dict[str, Any] = {
                     "transcript": transcript,
-                    "duration_s": await _duration(src),
+                    "duration_s": duration,
                 }
+                if transcript:
+                    await _assign_speaker(
+                        session, att, vec, params, duration, result
+                    )
+                return result
         if kind == "video":
             data = service.read_blob(att.sha256)
             with tempfile.TemporaryDirectory() as tmp:
@@ -133,10 +142,17 @@ class MediaPipeline:
                 out: dict[str, Any] = {"duration_s": await _duration(src)}
                 track = await _try_audio_track(src, Path(tmp) / "audio.wav")
                 if track is not None:
-                    t = await stt.transcribe_audio(session, user, track)
+                    t, (vec, params) = await asyncio.gather(
+                        stt.transcribe_audio(session, user, track),
+                        _embed_safe(user, track),
+                    )
                     if t is None:
                         raise MediaSkippedError("no stt provider bound")
                     out["transcript"] = t
+                    if t:
+                        await _assign_speaker(
+                            session, att, vec, params, out["duration_s"], out
+                        )
                 frames = await _video_frames(src, Path(tmp))
                 if frames:
                     caption = await vision.describe_images(
@@ -166,6 +182,38 @@ class MediaPipeline:
 
 class MediaSkippedError(Exception):
     """Capability unbound or media kind unsupported — not an error."""
+
+
+async def _embed_safe(
+    user: User, wav: Path
+) -> tuple[list[float] | None, dict[str, Any]]:
+    """Speaker embedding on its own session (AsyncSession isn't concurrent-safe);
+    failures degrade to no speaker data — they must never hurt the transcript."""
+    try:
+        async with get_sessionmaker()() as s:
+            return await speaker.embed_audio(s, user, wav)
+    except Exception:
+        log.warning("speaker: embed failed", exc_info=True)
+        return None, {}
+
+
+async def _assign_speaker(
+    session: AsyncSession,
+    att: Attachment,
+    vec: list[float] | None,
+    params: dict[str, Any],
+    duration: float | None,
+    out: dict[str, Any],
+) -> None:
+    if vec is None:
+        return
+    min_dur = float(params.get("min_duration_s", speaker.MIN_DURATION_S))
+    if duration is not None and duration < min_dur:
+        return
+    try:
+        out["speaker"] = await speaker.assign_voice(session, att, vec, params)
+    except Exception:
+        log.warning("speaker: assign failed attachment=%s", att.id, exc_info=True)
 
 
 def _stage(data: bytes, tmp: str, name: str) -> Path:

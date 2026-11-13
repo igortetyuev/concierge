@@ -664,7 +664,12 @@ async def voice_quick(
         )
 
     parts = [
-        {"type": "text", "text": transcript, "transcribed": True},
+        {
+            "type": "text",
+            "text": transcript,
+            "transcribed": True,
+            **media_service.speaker_of(att),
+        },
         {
             "type": "audio",
             "attachment_id": att.id,
@@ -797,6 +802,7 @@ async def voice_message(
                 "text": combined,
                 "transcribed": True,
                 "voice_attachment_id": att.id,
+                **media_service.speaker_of(att),
             }
         )
     else:

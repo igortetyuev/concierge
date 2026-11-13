@@ -176,10 +176,25 @@ def attachment_to_dict(att: Attachment) -> dict[str, Any]:
         "status": att.derived.get("status", "pending"),
         "created_at": att.created_at.isoformat() if att.created_at else None,
     }
-    for key in ("transcript", "caption", "text", "duration_s", "pages", "error"):
+    for key in (
+        "transcript",
+        "caption",
+        "text",
+        "duration_s",
+        "pages",
+        "error",
+        "speaker",
+    ):
         if key in att.derived:
             out[key] = att.derived[key]
     return out
+
+
+def speaker_of(att: Attachment) -> dict[str, Any]:
+    """{"speaker": {...}} to spread into a message part, or {} — used where a
+    text part (voice_attachment_id) doesn't get expansion from attachment_id."""
+    sp = att.derived.get("speaker")
+    return {"speaker": sp} if isinstance(sp, dict) else {}
 
 
 def derived_text(att: Attachment) -> str:
@@ -209,7 +224,15 @@ def expand_part(part: dict[str, Any], att: Attachment | None) -> dict[str, Any]:
         return {**part, "status": "missing"}
     out = {**part, "name": att.original_name, "mime": att.mime}
     out["status"] = att.derived.get("status", "pending")
-    for key in ("transcript", "caption", "text", "duration_s", "pages", "error"):
+    for key in (
+        "transcript",
+        "caption",
+        "text",
+        "duration_s",
+        "pages",
+        "error",
+        "speaker",
+    ):
         if key in att.derived:
             out[key] = att.derived[key]
     return out

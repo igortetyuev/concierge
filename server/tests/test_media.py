@@ -11,6 +11,7 @@ from concierge.agent.runtime import AgentRuntime, get_runtime
 from concierge.conversations.models import Conversation
 from concierge.core import db
 from concierge.media import service as media_service
+from concierge.media import stt
 from concierge.media.models import Attachment
 from concierge.media.pipeline import get_pipeline
 from concierge.media.service import transcribe
@@ -329,6 +330,41 @@ async def test_voice_message_run_uses_transcript(
         {att_id: att},
     )
     assert content == "когда встреча бухгалтера"
+
+
+def test_stt_hallucination_filter() -> None:
+    """Whisper noise artifacts (subtitle credits, channel plugs) are dropped;
+    real speech — even containing a stray artifact segment — is kept."""
+    assert stt._hallucinated("Субтитры сделал DimaTorzok")
+    assert stt._hallucinated("Субтитры сделал dima torzok!")
+    assert stt._hallucinated("Субтитры создавал DimaTorzok")
+    assert stt._hallucinated("Редактор субтитров А.Синецкая")  # noqa: RUF001
+    assert stt._hallucinated("Корректор А.Егорова")  # noqa: RUF001
+    assert stt._hallucinated("Спасибо за просмотр. Подписывайтесь на канал!")
+    assert stt._hallucinated("Thanks for watching!")
+    assert stt._hallucinated("Продолжение следует…")
+    assert stt._hallucinated("♪ ♪ ♪")
+    assert stt._hallucinated("")
+    assert not stt._hallucinated("проверка микрофона")
+    assert not stt._hallucinated("Субтитры сделал DimaTorzok. Купи молоко.")
+    assert not stt._hallucinated("спасибо")
+
+
+@needs_ffmpeg
+async def test_noise_transcript_dropped(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """A whisper subtitle-credit artifact lands as an empty transcript."""
+    await _add_provider("stt", {"transcript": "Субтитры сделал DimaTorzok"})
+    await make_user("nz", "adult")
+    token = await login(client, "nz")
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _sine(Path(tmp) / "noise.ogg", ["-c:a", "libopus"])
+    resp = await _upload(client, token, "noise.ogg", blob, "audio/ogg")
+    assert resp.status_code == 201
+    att = await _wait_attachment(resp.json()["id"])
+    assert att.derived["status"] == "done", att.derived
+    assert att.derived["transcript"] == ""
 
 
 async def test_kind_of_and_missing(engine) -> None:

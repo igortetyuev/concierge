@@ -26,7 +26,10 @@ from concierge.conversations.models import (
 )
 from concierge.core import audit
 from concierge.core.audit import AuditEvent
+from concierge.core.db import utcnow
 from concierge.core.ratelimit import client_ip
+from concierge.media import speaker as speaker_service
+from concierge.media.models import Attachment, Voice, VoiceSample
 from concierge.settings import service as settings_service
 
 router = APIRouter(prefix="/admin")
@@ -1242,3 +1245,308 @@ async def list_audit(
             for e in rows
         ],
     )
+
+
+# ---------- voices (speaker-ID) ----------
+
+
+class VoicePatch(BaseModel):
+    label: str | None = None
+    user_id: int | None = None
+
+
+class VoiceMergeIn(BaseModel):
+    into_id: int
+
+
+class VoiceSampleIn(BaseModel):
+    attachment_id: int
+
+
+class VoiceOut(BaseModel):
+    id: int
+    label: str
+    user_id: int | None
+    user_name: str | None
+    sample_count: int
+    sample_attachment_id: int | None
+    last_heard_at: Any
+    created_at: Any
+
+
+class VoiceSampleOut(BaseModel):
+    id: int
+    attachment_id: int
+    attachment_name: str
+    score: float
+    created_at: Any
+
+
+@router.get("/voices")
+async def list_voices(_: ManageUsers, session: SessionDep) -> list[VoiceOut]:
+    rows = (
+        await session.execute(
+            select(Voice, User.display_name)
+            .outerjoin(User, Voice.user_id == User.id)
+            .order_by(Voice.id)
+        )
+    ).all()
+    return [
+        VoiceOut(
+            id=v.id,
+            label=v.label,
+            user_id=v.user_id,
+            user_name=uname,
+            sample_count=v.sample_count,
+            sample_attachment_id=v.sample_attachment_id,
+            last_heard_at=v.last_heard_at,
+            created_at=v.created_at,
+        )
+        for v, uname in rows
+    ]
+
+
+@router.patch("/voices/{voice_id}")
+async def patch_voice(
+    voice_id: int,
+    body: VoicePatch,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
+) -> VoiceOut:
+    voice = await session.get(Voice, voice_id)
+    if voice is None:
+        raise HTTPException(404, "voice not found")
+    data = body.model_dump(exclude_unset=True)
+    if "label" in data:
+        voice.label = str(data["label"])[:64] or voice.label
+    if "user_id" in data:
+        uid = data["user_id"]
+        if uid is not None and await session.get(User, uid) is None:
+            raise HTTPException(404, "user not found")
+        voice.user_id = uid
+    audit.record(
+        session,
+        "admin.voice.patch",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=voice.label,
+        detail={"fields": sorted(data)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    uname = None
+    if voice.user_id is not None:
+        owner = await session.get(User, voice.user_id)
+        uname = owner.display_name if owner else None
+    return VoiceOut(
+        id=voice.id,
+        label=voice.label,
+        user_id=voice.user_id,
+        user_name=uname,
+        sample_count=voice.sample_count,
+        sample_attachment_id=voice.sample_attachment_id,
+        last_heard_at=voice.last_heard_at,
+        created_at=voice.created_at,
+    )
+
+
+@router.post("/voices/{voice_id}/merge")
+async def merge_voice(
+    voice_id: int,
+    body: VoiceMergeIn,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
+) -> dict[str, bool]:
+    src = await session.get(Voice, voice_id)
+    into = await session.get(Voice, body.into_id)
+    if src is None or into is None:
+        raise HTTPException(404, "voice not found")
+    if src.id == into.id:
+        raise HTTPException(400, "cannot merge a voice into itself")
+    await session.execute(
+        update(VoiceSample)
+        .where(VoiceSample.voice_id == src.id)
+        .values(voice_id=into.id)
+    )
+    if into.sample_attachment_id is None:
+        into.sample_attachment_id = src.sample_attachment_id
+    if src.last_heard_at and (
+        into.last_heard_at is None or src.last_heard_at > into.last_heard_at
+    ):
+        into.last_heard_at = src.last_heard_at
+    await session.delete(src)
+    await session.flush()
+    await speaker_service.recompute_centroid(session, into.id)
+    audit.record(
+        session,
+        "admin.voice.merge",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=into.label,
+        detail={"from_id": voice_id, "from_label": src.label},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return {"ok": True}
+
+
+@router.delete("/voices/{voice_id}")
+async def delete_voice(
+    voice_id: int, request: Request, admin: ManageUsers, session: SessionDep
+) -> dict[str, bool]:
+    voice = await session.get(Voice, voice_id)
+    if voice is None:
+        raise HTTPException(404, "voice not found")
+    audit.record(
+        session,
+        "admin.voice.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=voice.label,
+        ip=client_ip(request),
+    )
+    await session.execute(
+        delete(VoiceSample).where(VoiceSample.voice_id == voice_id)
+    )
+    await session.delete(voice)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/voices/{voice_id}/samples")
+async def list_voice_samples(
+    voice_id: int, _: ManageUsers, session: SessionDep
+) -> list[VoiceSampleOut]:
+    if await session.get(Voice, voice_id) is None:
+        raise HTTPException(404, "voice not found")
+    rows = (
+        await session.execute(
+            select(VoiceSample, Attachment.original_name)
+            .join(Attachment, VoiceSample.attachment_id == Attachment.id)
+            .where(VoiceSample.voice_id == voice_id)
+            .order_by(VoiceSample.id)
+        )
+    ).all()
+    return [
+        VoiceSampleOut(
+            id=s.id,
+            attachment_id=s.attachment_id,
+            attachment_name=name,
+            score=s.score,
+            created_at=s.created_at,
+        )
+        for s, name in rows
+    ]
+
+
+@router.post("/voices/{voice_id}/samples", status_code=201)
+async def add_voice_sample(
+    voice_id: int,
+    body: VoiceSampleIn,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
+) -> VoiceSampleOut:
+    """Attach an attachment to the voice: reuse its stored embedding when a
+    sample row already exists (moved between voices), embed fresh otherwise."""
+    voice = await session.get(Voice, voice_id)
+    if voice is None:
+        raise HTTPException(404, "voice not found")
+    att = await session.get(Attachment, body.attachment_id)
+    if att is None:
+        raise HTTPException(404, "attachment not found")
+    moved_from = None
+    sample = (
+        await session.execute(
+            select(VoiceSample).where(VoiceSample.attachment_id == att.id)
+        )
+    ).scalar_one_or_none()
+    if sample is not None:
+        moved_from = sample.voice_id if sample.voice_id != voice_id else None
+        sample.voice_id = voice_id
+        sample.score = (
+            speaker_service.cosine(sample.embedding, voice.centroid)
+            if voice.centroid
+            else 0.0
+        )
+    else:
+        vec, _ = await speaker_service.embed_attachment(session, admin, att)
+        if vec is None:
+            raise HTTPException(422, "cannot compute embedding")
+        sample = VoiceSample(
+            voice_id=voice_id,
+            attachment_id=att.id,
+            embedding=vec,
+            score=speaker_service.cosine(vec, voice.centroid)
+            if voice.centroid
+            else 0.0,
+        )
+        session.add(sample)
+    if voice.sample_attachment_id is None:
+        voice.sample_attachment_id = att.id
+    voice.last_heard_at = utcnow()
+    await session.flush()
+    await speaker_service.recompute_centroid(session, voice_id)
+    if moved_from is not None:
+        await speaker_service.recompute_centroid(session, moved_from)
+    audit.record(
+        session,
+        "admin.voice.sample.add",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=voice.label,
+        detail={"attachment_id": att.id, "from_voice_id": moved_from},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return VoiceSampleOut(
+        id=sample.id,
+        attachment_id=sample.attachment_id,
+        attachment_name=att.original_name,
+        score=sample.score,
+        created_at=sample.created_at,
+    )
+
+
+@router.delete("/voices/{voice_id}/samples/{sample_id}")
+async def delete_voice_sample(
+    voice_id: int,
+    sample_id: int,
+    request: Request,
+    admin: ManageUsers,
+    session: SessionDep,
+) -> dict[str, bool]:
+    voice = await session.get(Voice, voice_id)
+    if voice is None:
+        raise HTTPException(404, "voice not found")
+    sample = await session.get(VoiceSample, sample_id)
+    if sample is None or sample.voice_id != voice_id:
+        raise HTTPException(404, "sample not found")
+    if voice.sample_attachment_id == sample.attachment_id:
+        voice.sample_attachment_id = None
+    await session.delete(sample)
+    await session.flush()
+    await speaker_service.recompute_centroid(session, voice_id)
+    if voice.sample_attachment_id is None:
+        first = (
+            await session.execute(
+                select(VoiceSample.attachment_id)
+                .where(VoiceSample.voice_id == voice_id)
+                .order_by(VoiceSample.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        voice.sample_attachment_id = first
+    audit.record(
+        session,
+        "admin.voice.sample.delete",
+        actor_id=admin.id,
+        actor_name=admin.username,
+        target=voice.label,
+        detail={"attachment_id": sample.attachment_id},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return {"ok": True}

@@ -80,6 +80,21 @@ export function ToolChip({
   )
 }
 
+function speakerName(part: MessagePart): string | null {
+  const sp = part.speaker
+  return sp && typeof sp.name === 'string' && sp.name ? sp.name : null
+}
+
+function SpeakerChip({ name }: { name: string | null }) {
+  if (name == null) return null
+  return (
+    <span className="speaker-chip" title="Распознанный голос">
+      <IconSpeaker size={11} />
+      {name}
+    </span>
+  )
+}
+
 const TOOL_DETAILS_MAX = 4000
 
 function fmtToolValue(v: unknown): string | null {
@@ -247,6 +262,7 @@ function AttachmentPart({ part, convId, origin, hasText, autoplay, onOpenImage }
         ))}
       {caption ? <span className="part-caption">{String(caption)}</span> : null}
       {transcript ? <span className="part-transcript">{String(transcript)}</span> : null}
+      <SpeakerChip name={live?.speaker?.name ?? speakerName(part)} />
       {derivedText && !transcript && part.generated !== true ? (
         <span className="part-transcript">
           {String(derivedText).length > 400 ? `${String(derivedText).slice(0, 400)}…` : String(derivedText)}
@@ -330,6 +346,7 @@ function VoiceTextPart({
             {failed ? 'аудио недоступно' : 'загрузка…'}
           </span>
         ))}
+      <SpeakerChip name={speakerName(part)} />
     </div>
   )
 }
@@ -443,7 +460,10 @@ export default function MessageParts({
             )
           }
           return (
-            <Markdown key={i} text={String(p.text ?? '')} mentions={mentions} />
+            <span key={i}>
+              <Markdown text={String(p.text ?? '')} mentions={mentions} />
+              <SpeakerChip name={speakerName(p)} />
+            </span>
           )
         }
         if (p.type === 'mention') {

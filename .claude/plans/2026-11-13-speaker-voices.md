@@ -2,7 +2,7 @@
 id: speaker-voices
 title: Распознавание говорящего (speaker-ID) — голоса, маппинг на пользователей, дообучение
 planned: 2026-11-13
-status: ready
+status: done
 depends_on: []
 conflicts_with: []
 touches:
@@ -21,9 +21,9 @@ touches:
   - web/src/components/admin/AdminVoices.tsx
   - AGENTS.md
   - ../speakerid/**            # новый соседний проект ~/projects/speakerid
-claimed_by: null
-claimed_at: null
-finished_at: null
+claimed_by: devin-desktop session (main @ 71b850d)
+claimed_at: 2026-11-13T21:18:47+0200
+finished_at: 2026-11-13T22:05:00+0200
 blocked_reason: null
 ---
 

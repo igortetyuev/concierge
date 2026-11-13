@@ -37,6 +37,38 @@ async def _quick(
     )
 
 
+async def test_voice_quick_speaker_parts(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """speaker binding -> text part + expanded audio part carry the voice."""
+    text = "напомни позвонить сантехнику насчёт крана на кухне"
+    await _add_provider("stt", {"transcript": text})
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await _add_provider("chat_fast", {"custom_output_text": "Сантехник"})
+    await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
+    await make_user("vqs", "adult")
+    token = await login(client, "vqs")
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _sine(Path(tmp) / "v.m4a", ["-c:a", "aac"], seconds=2)
+
+    resp = await _quick(client, token, blob)
+    assert resp.status_code == 200, resp.text
+    out = resp.json()
+    assert out["status"] == "ok"
+    msgs = (
+        await client.get(
+            f"/conversations/{out['conversation_id']}/messages",
+            headers=auth(token),
+        )
+    ).json()
+    first = msgs[0]
+    assert first["parts"][0]["speaker"]["voice_id"] == 1
+    audio = first["parts"][1]
+    assert audio["type"] == "audio"
+    assert audio["speaker"]["name"] == "Голос 1"
+    await get_runtime().wait_idle()
+
+
 async def test_voice_quick_ok(engine, client: httpx.AsyncClient) -> None:
     """voice -> transcript message + audio part -> run -> chat_fast title."""
     text = "включи свет на кухне и расскажи, что сегодня готовят дома на ужин"

@@ -576,10 +576,15 @@ class AgentRuntime:
         atts: dict[int, Attachment],
     ) -> str:
         chunks = []
+        speaker_label: str | None = None
         for p in parts:
             ptype = p.get("type")
             if ptype == "text":
                 chunks.append(str(p.get("text", "")))
+                if speaker_label is None:
+                    sp = p.get("speaker")
+                    if isinstance(sp, dict):
+                        speaker_label = str(sp.get("name") or "") or None
             elif ptype in (
                 "tool",
                 "tool_call",
@@ -592,6 +597,10 @@ class AgentRuntime:
             elif (aid := media_service.part_attachment_id(p)) is not None and (
                 att := atts.get(aid)
             ) is not None:
+                if speaker_label is None:
+                    sp = att.derived.get("speaker")
+                    if isinstance(sp, dict):
+                        speaker_label = str(sp.get("name") or "") or None
                 label = att.original_name or ptype or "attachment"
                 text = media_service.media_prompt_text(att, str(ptype))
                 if ptype in ("audio", "video"):
@@ -604,7 +613,8 @@ class AgentRuntime:
                 chunks.append(f"[{ptype or 'attachment'}]")
         text = "\n".join(c for c in chunks if c)
         if conv.kind == "group" and author_id is not None:
-            text = f"{member_names.get(author_id, 'unknown')}: {text}"
+            who = speaker_label or member_names.get(author_id, "unknown")
+            text = f"{who}: {text}"
         return text
 
     async def _emit(

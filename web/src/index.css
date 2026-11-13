@@ -95,6 +95,7 @@ button,
 summary,
 .attach-chip,
 .tool-chip,
+.speaker-chip,
 .avatar {
   -webkit-user-select: none;
   user-select: none;
@@ -901,6 +902,19 @@ a {
 
 .tool-chip.status-error {
   color: var(--danger);
+}
+
+.speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 4px 4px 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 0.72rem;
+  color: var(--text-2);
 }
 
 .tool-progress {

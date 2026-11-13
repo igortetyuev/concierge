@@ -88,6 +88,28 @@ async def test_voice_message_ok(engine, client: httpx.AsyncClient) -> None:
     assert msgs[-1]["author_kind"] == "assistant"
 
 
+async def test_voice_message_speaker_part(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """speaker binding -> the text part carries the voice attribution."""
+    text = "напомни сходить за хлебом вечером после работы"
+    await _add_provider("stt", {"transcript": text})
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
+    await make_user("vs", "adult")
+    token = await login(client, "vs")
+    cid = await _conv(client, token)
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _sine(Path(tmp) / "v.m4a", ["-c:a", "aac"], seconds=2)
+
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 200, resp.text
+    part = resp.json()["message"]["parts"][0]
+    assert part["speaker"]["voice_id"] == 1
+    assert part["speaker"]["name"] == "Голос 1"
+    await get_runtime().wait_idle()
+
+
 async def test_voice_message_merges_text_and_attachments(
     engine, client: httpx.AsyncClient
 ) -> None:

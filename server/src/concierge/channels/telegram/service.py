@@ -611,6 +611,7 @@ class TelegramService:
                             "type": "text",
                             "text": transcript,
                             "transcribed": True,
+                            **media_service.speaker_of(att),
                         }
                     )
                     parts.append(media_part)

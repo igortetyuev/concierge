@@ -12,6 +12,7 @@ import AdminMcp from './AdminMcp'
 import AdminCodeAgents from './AdminCodeAgents'
 import AdminTelegram from './AdminTelegram'
 import AdminJournal from './AdminJournal'
+import AdminVoices from './AdminVoices'
 
 type TabId =
   | 'users'
@@ -21,6 +22,7 @@ type TabId =
   | 'mcp'
   | 'agents'
   | 'telegram'
+  | 'voices'
   | 'journal'
 
 const TABS: { id: TabId; label: string; perm: string }[] = [
@@ -31,6 +33,7 @@ const TABS: { id: TabId; label: string; perm: string }[] = [
   { id: 'mcp', label: 'MCP', perm: 'manage_mcp' },
   { id: 'agents', label: 'Код-агенты', perm: 'manage_code_agents' },
   { id: 'telegram', label: 'Telegram', perm: 'manage_users' },
+  { id: 'voices', label: 'Голоса', perm: 'manage_users' },
   { id: 'journal', label: 'Журнал', perm: 'manage_users' },
 ]
 
@@ -83,6 +86,7 @@ export default function AdminView() {
         {active === 'mcp' && <AdminMcp />}
         {active === 'agents' && <AdminCodeAgents />}
         {active === 'telegram' && <AdminTelegram />}
+        {active === 'voices' && <AdminVoices />}
         {active === 'journal' && <AdminJournal />}
       </div>
     </div>
