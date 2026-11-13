@@ -212,6 +212,29 @@ code-agents, Telegram, журнал runs/затрат и аудит-лог. Ау
 @упоминанию/reply), отключите privacy mode у BotFather (`/setprivacy`) или сделайте бота
 админом группы.
 
+## Режим ответа (reply_mode)
+
+`conversations.reply_mode` — `always` (личные по умолчанию) или `mention`
+(групповые по умолчанию; PATCH `/conversations/{id}`, в PWA — панель деталей).
+В `mention` ран запускается только если `prompt.is_mentioned` находит голое
+`{"type":"mention"}` (без user_id) или токен (`@консьерж`, `@assistant`,
+`@concierge`, `@{agent.name}`) в тексте. Для транскрибированных голосовых
+партов (`"transcribed": true` — колонка esp32home, hold-to-talk, голосовые в
+Telegram) токены матчатся без `@`: фраза «Консьерж, …» триггерит, обычная
+речь — нет (сообщение всё равно сохраняется и распознаётся). Сессия
+«Гостиная» колонки — в `mention`.
+
+## Голосовая линия (voice_session)
+
+`conversations.settings.voice_session: true` помечает сессию-колонку
+(«Гостиная», id=27): если она ушла в архив/удалена, `POST .../voice-message`
+не падает — `service.resolve_voice_conversation` возвращает активного
+наследника линии (`settings.voice_root` = id корня) или клонирует последнюю
+сессию (kind/title/reply_mode/origin, участники — ВСЕ пользователи, settings
++ `voice_root`). Колонка шлёт на тот же CONV_ID — сервер сам резолвит
+актуальную сессию; в ответе `conversation_id` — куда реально попало
+сообщение. Без флага: archived → 409, deleted → 404 как раньше.
+
 ## Qdrant — решение по доступу
 
 Qdrant на сервере слушает `0.0.0.0:6333/6334` — сознательно открыт на LAN:

@@ -373,9 +373,58 @@ export default function MessageParts({
     : undefined
   const foldedAudioId =
     foldedAudio != null ? Number(foldedAudio.attachment_id) : null
+  // Consecutive thinking/tool parts collapse into one shared "рассуждение"
+  // details block; tool_return parts ride along inside their ToolCallBlock.
+  const workTypes = new Set(['thinking', 'tool', 'tool_call', 'tool_return'])
+  const blocks: ({ work: true; items: MessagePart[] } | { work: false; p: MessagePart; i: number })[] = []
+  parts.forEach((p, i) => {
+    if (workTypes.has(p.type)) {
+      const last = blocks[blocks.length - 1]
+      if (last?.work) last.items.push(p)
+      else blocks.push({ work: true, items: [p] })
+    } else {
+      blocks.push({ work: false, p, i })
+    }
+  })
+  const renderWorkPart = (p: MessagePart, j: number) => {
+    if (p.type === 'thinking') {
+      return <Markdown key={j} text={String(p.content ?? '')} />
+    }
+    if (p.type === 'tool') {
+      return (
+        <ToolChip
+          key={p.tool_call_id ?? j}
+          name={String(p.name ?? 'tool')}
+          status={p.status}
+        />
+      )
+    }
+    if (p.type === 'tool_call') {
+      return (
+        <ToolCallBlock
+          key={String(p.tool_call_id ?? j)}
+          part={p}
+          ret={toolReturns.get(String(p.tool_call_id ?? ''))}
+        />
+      )
+    }
+    return null // tool_return — rendered inside the matching ToolCallBlock
+  }
   return (
     <>
-      {parts.map((p, i) => {
+      {blocks.map((b, bi) => {
+        if (b.work) {
+          const hasThinking = b.items.some((p) => p.type === 'thinking')
+          return (
+            <details key={`w${bi}`} className="part-thinking">
+              <summary className="muted">
+                {hasThinking ? 'рассуждение' : 'инструменты'}
+              </summary>
+              {b.items.map(renderWorkPart)}
+            </details>
+          )
+        }
+        const { p, i } = b
         if (p.type === 'text') {
           const voiceId =
             typeof p.voice_attachment_id === 'number'
@@ -399,29 +448,6 @@ export default function MessageParts({
         }
         if (p.type === 'mention') {
           return null
-        }
-        if (p.type === 'tool') {
-          return <ToolChip key={p.tool_call_id ?? i} name={String(p.name ?? 'tool')} status={p.status} />
-        }
-        if (p.type === 'tool_call') {
-          return (
-            <ToolCallBlock
-              key={String(p.tool_call_id ?? i)}
-              part={p}
-              ret={toolReturns.get(String(p.tool_call_id ?? ''))}
-            />
-          )
-        }
-        if (p.type === 'tool_return') {
-          return null // rendered inside the matching ToolCallBlock
-        }
-        if (p.type === 'thinking') {
-          return (
-            <details key={i} className="part-thinking">
-              <summary className="muted">рассуждение</summary>
-              <Markdown text={String(p.content ?? '')} />
-            </details>
-          )
         }
         if (p.type === 'compaction') {
           const count = Number(p.count ?? 0)

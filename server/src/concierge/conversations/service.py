@@ -67,6 +67,46 @@ async def get_member_conversation(
     return row
 
 
+async def resolve_voice_conversation(
+    session: AsyncSession, conv: Conversation
+) -> tuple[Conversation, bool]:
+    """A `settings.voice_session` conversation recreates itself when inactive:
+    return the active session of the same voice line, or clone the latest one.
+    The clone gets all users as members and `settings.voice_root` pointing at
+    the line's root. Second tuple item is True when a clone was created."""
+    root_id = int(conv.settings.get("voice_root") or conv.id)
+    latest = (
+        await session.execute(
+            select(Conversation)
+            .where(
+                cast(Conversation.settings["voice_root"], String)
+                == str(root_id)
+            )
+            .order_by(Conversation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest is not None and latest.status == "active":
+        return latest, False
+    src = latest or conv
+    clone = Conversation(
+        kind=src.kind,
+        title=src.title,
+        owner_id=src.owner_id,
+        reply_mode=src.reply_mode,
+        origin=src.origin,
+        settings={**src.settings, "voice_root": root_id},
+    )
+    session.add(clone)
+    await session.flush()
+    user_ids = set((await session.execute(select(User.id))).scalars())
+    for uid in user_ids:
+        session.add(ConversationMember(conversation_id=clone.id, user_id=uid))
+    await session.commit()
+    await session.refresh(clone, ["members"])
+    return clone, True
+
+
 async def list_conversations(
     session: AsyncSession,
     user_id: int,

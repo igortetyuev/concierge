@@ -2,8 +2,12 @@ import tempfile
 from pathlib import Path
 
 import httpx
+from sqlalchemy import select
 
 from concierge.agent.runtime import get_runtime
+from concierge.auth.models import User
+from concierge.conversations.models import Conversation
+from concierge.core import db
 from tests.conftest import auth, login, make_user
 from tests.test_media import _add_provider, _sine, needs_ffmpeg
 
@@ -203,6 +207,89 @@ async def test_voice_message_stt_unavailable(
         "system",
         "assistant",
     ]
+
+
+async def test_voice_message_recreates_inactive_session(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """An inactive `voice_session` conversation spawns a successor with all
+    users as members; the message lands there, and the line keeps moving."""
+    await _add_provider("stt", {"transcript": "консьерж, включи проектор"})
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await make_user("vo", "adult")
+    await make_user("vo2", "adult")
+    token = await login(client, "vo")
+    cid = await _conv(client, token)
+
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, cid)
+        assert conv is not None
+        conv.settings = {"voice_session": True}
+        conv.status = "archived"
+        await session.commit()
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _m4a(tmp)
+
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 200, resp.text
+    out = resp.json()
+    new_cid = out["conversation_id"]
+    assert new_cid != cid
+    async with db.get_sessionmaker()() as session:
+        clone = await session.get(Conversation, new_cid)
+        assert clone is not None
+        assert clone.status == "active"
+        assert clone.settings["voice_root"] == cid
+        member_ids = {m.user_id for m in clone.members}
+        all_ids = set(
+            (await session.execute(select(User.id))).scalars()
+        )
+        assert member_ids == all_ids
+    msgs = await _msgs(client, token, new_cid)
+    assert msgs[0]["parts"][0]["text"] == "консьерж, включи проектор"
+    await get_runtime().wait_idle()
+
+    # While the clone is live the same stale id keeps routing to it.
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["conversation_id"] == new_cid
+    await get_runtime().wait_idle()
+
+    # Archive the clone too: the line moves on to a third session.
+    async with db.get_sessionmaker()() as session:
+        clone = await session.get(Conversation, new_cid)
+        assert clone is not None
+        clone.status = "archived"
+        await session.commit()
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 200, resp.text
+    third_cid = resp.json()["conversation_id"]
+    assert third_cid not in (cid, new_cid)
+    async with db.get_sessionmaker()() as session:
+        third = await session.get(Conversation, third_cid)
+        assert third is not None
+        assert third.settings["voice_root"] == cid
+    await get_runtime().wait_idle()
+
+
+async def test_voice_message_archived_without_flag(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """A regular archived session still rejects voice posts with 409."""
+    await make_user("nf", "adult")
+    token = await login(client, "nf")
+    cid = await _conv(client, token)
+    resp = await client.patch(
+        f"/conversations/{cid}",
+        json={"status": "archived"},
+        headers=auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _m4a(tmp)
+
+    resp = await _voice(client, token, cid, blob)
+    assert resp.status_code == 409
 
 
 async def test_voice_message_membership_and_input(

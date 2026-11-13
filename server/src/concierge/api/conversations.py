@@ -694,6 +694,7 @@ class VoiceMessageOut(BaseModel):
     status: Literal["ok", "empty_transcript", "stt_failed"]
     message: MessageOut | None = None
     transcript: str | None = None
+    conversation_id: int | None = None
 
 
 @router.post("/conversations/{conversation_id}/voice-message")
@@ -708,9 +709,29 @@ async def voice_message(
 ) -> VoiceMessageOut:
     """Hold-to-talk inside a session: audio -> STT -> user message whose text
     part carries `voice_attachment_id` for on-demand playback."""
-    conv = await _member_conv_or_404(session, conversation_id, user)
+    conv = await service.get_member_conversation(
+        session, conversation_id, user.id
+    )
+    if conv is None:
+        raise HTTPException(404, "conversation not found")
     if conv.status != "active":
-        raise HTTPException(409, "conversation is archived")
+        if not conv.settings.get("voice_session"):
+            if conv.status == "deleted" and not has_permission(
+                user.role.permissions, "*"
+            ):
+                raise HTTPException(404, "conversation not found")
+            raise HTTPException(409, "conversation is archived")
+        conv, spawned = await service.resolve_voice_conversation(session, conv)
+        if spawned:
+            conv_out = await _conv_out(session, conv, user)
+            await get_hub().publish_users(
+                {m.user_id for m in conv.members},
+                ChannelEvent(
+                    "conversation.updated",
+                    conv.id,
+                    {"conversation": conv_out.model_dump(mode="json")},
+                ),
+            )
 
     max_bytes = media_service.max_upload_bytes(user)
     if max_bytes <= 0:
@@ -761,7 +782,11 @@ async def voice_message(
         # Nothing recognized and nothing else to send — keep the session clean.
         att.conversation_id = None
         await session.commit()
-        return VoiceMessageOut(status=status, transcript=transcript or None)
+        return VoiceMessageOut(
+            status=status,
+            transcript=transcript or None,
+            conversation_id=conv.id,
+        )
 
     parts: list[dict[str, Any]] = []
     if spoken:
@@ -831,6 +856,7 @@ async def voice_message(
         status=status,
         message=out,
         transcript=transcript or None,
+        conversation_id=conv.id,
     )
 
 

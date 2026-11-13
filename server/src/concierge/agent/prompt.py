@@ -78,4 +78,12 @@ def is_mentioned(parts: list[dict[str, Any]], tokens: tuple[str, ...]) -> bool:
     text = " ".join(
         str(p.get("text", "")) for p in parts if p.get("type") == "text"
     ).lower()
-    return any(t in text for t in tokens)
+    if any(t in text for t in tokens):
+        return True
+    # Voice transcripts have no "@": match the bare trigger words there.
+    spoken = " ".join(
+        str(p.get("text", ""))
+        for p in parts
+        if p.get("type") == "text" and p.get("transcribed")
+    ).lower()
+    return any(t.lstrip("@") in spoken for t in tokens)

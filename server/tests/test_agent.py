@@ -592,6 +592,51 @@ async def test_reply_mode_mention(engine, client: httpx.AsyncClient) -> None:
     run = await _run_and_wait(cid, msg_yes["id"])
     assert run.status == "done"
 
+    # Typed text without "@" stays silent, but a transcribed phrase naming
+    # the assistant triggers (voice transcripts carry no "@").
+    await _post_and_collect(client, token, cid, "консьерж, привет")
+    resp = await client.post(
+        f"/conversations/{cid}/messages",
+        json={
+            "parts": [
+                {
+                    "type": "text",
+                    "text": "просто разговор без обращения",
+                    "transcribed": True,
+                }
+            ]
+        },
+        headers=auth(token),
+    )
+    assert resp.status_code == 201
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        runs = (
+            await session.execute(
+                select(func.count()).select_from(Run).where(
+                    Run.conversation_id == cid
+                )
+            )
+        ).scalar_one()
+    assert runs == 2
+
+    resp = await client.post(
+        f"/conversations/{cid}/messages",
+        json={
+            "parts": [
+                {
+                    "type": "text",
+                    "text": "Консьерж, включи проектор",
+                    "transcribed": True,
+                }
+            ]
+        },
+        headers=auth(token),
+    )
+    assert resp.status_code == 201
+    run = await _run_and_wait(cid, int(resp.json()["id"]))
+    assert run.status == "done"
+
 
 async def test_stream_deltas_include_first_chunk(
     engine, client: httpx.AsyncClient, monkeypatch
