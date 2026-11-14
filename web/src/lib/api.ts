@@ -587,6 +587,10 @@ export const apiClient = {
     patchFn<ProviderOut>(`/admin/providers/${id}`, patch),
   deleteProvider: (id: number) =>
     api<{ ok: boolean }>(`/admin/providers/${id}`, { method: 'DELETE' }),
+  listProviderModels: (id: number, task?: string) =>
+    api<string[]>(
+      `/admin/providers/${id}/models${task ? `?task=${task}` : ''}`,
+    ),
 
   listBindings: () => api<BindingOut[]>('/admin/capability-bindings'),
   createBinding: (body: {

@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from concierge.agent.service import get_capability_binding
 from concierge.core.db import get_sessionmaker
@@ -152,6 +153,62 @@ async def test_role_specific_binding_wins(engine, client: httpx.AsyncClient) -> 
         assert b_child is not None and b_child.model == "child-model"
         b_other = await get_capability_binding(session, "chat", 999)
         assert b_other is not None and b_other.model == "default-model"
+
+
+async def test_provider_models_listing(
+    engine, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await make_user("admin", "admin")
+    token = await login(client, "admin")
+
+    p = await client.post(
+        "/admin/providers",
+        json={
+            "name": "speaches",
+            "kind": "openai-compatible",
+            "base_url": "http://whisper.lan:8000/v1",
+        },
+        headers=auth(token),
+    )
+    pid = p.json()["id"]
+
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["task"] = request.url.params.get("task", "")
+        return httpx.Response(
+            200, json={"data": [{"id": "b-model"}, {"id": "a-model"}, {}]}
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **_: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    resp = await client.get(
+        f"/admin/providers/{pid}/models?task=automatic-speech-recognition",
+        headers=auth(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == ["a-model", "b-model"]
+    assert seen == {
+        "path": "/v1/models",
+        "task": "automatic-speech-recognition",
+    }
+
+    # provider without base_url -> 422
+    p2 = await client.post(
+        "/admin/providers",
+        json={"name": "openai", "kind": "openai"},
+        headers=auth(token),
+    )
+    resp = await client.get(
+        f"/admin/providers/{p2.json()['id']}/models", headers=auth(token)
+    )
+    assert resp.status_code == 422
 
 
 async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:

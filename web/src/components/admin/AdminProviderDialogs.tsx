@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 
 import { apiClient } from '../../lib/api'
@@ -197,6 +197,7 @@ export function BindingDialog({
   const [capability, setCapability] = useState(item?.capability ?? 'chat')
   const [providerId, setProviderId] = useState(item?.provider_id ?? 0)
   const [model, setModel] = useState(item?.model ?? '')
+  const [modelOptions, setModelOptions] = useState<string[]>([])
   const [roleId, setRoleId] = useState(
     item?.role_id != null ? String(item.role_id) : '',
   )
@@ -205,6 +206,27 @@ export function BindingDialog({
   )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    setModelOptions([])
+    if (!providerId) return
+    const task =
+      capability === 'stt'
+        ? 'automatic-speech-recognition'
+        : capability === 'tts'
+          ? 'text-to-speech'
+          : undefined
+    let cancelled = false
+    apiClient
+      .listProviderModels(providerId, task)
+      .then((ms) => {
+        if (!cancelled) setModelOptions(ms)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [providerId, capability])
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -279,7 +301,15 @@ export function BindingDialog({
           value={model}
           onChange={(e) => setModel(e.target.value)}
           placeholder="напр. bge-m3, gpt://b1g…/aliceai-llm/latest"
+          list={modelOptions.length ? 'provider-models' : undefined}
         />
+        {modelOptions.length > 0 && (
+          <datalist id="provider-models">
+            {modelOptions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        )}
       </label>
       <label className="field">
         <span>Роль</span>

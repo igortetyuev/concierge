@@ -92,6 +92,11 @@ DimaTorzok», «Редактор субтитров …», «Thanks for watching
 `_HALLUCINATION_PHRASES`/`_HALLUCINATION_PREFIXES`, warning в journald).
 Пустой транскрипт → `empty_transcript` в voice-ручках и не создаёт Voice
 (pipeline не вызывает `assign_voice`, чтобы шум не плодил «Голос N»).
+В кэше также `Systran/faster-whisper-large-v3` (полная v3, ~2× медленнее
+turbo) — в диалоге binding поле «Модель» показывает datalist из
+`GET /admin/providers/{id}/models` (прокси на `{base_url}/models`
+провайдера; для `stt`/`tts` пробрасывается `task=`
+automatic-speech-recognition/text-to-speech — фильтр Speaches).
 TODO: привязать capability `tts` → `speaches-lan`, model `tts-1` (после проверки голосов Kokoro).
 
 ## Speaker-ID
@@ -141,7 +146,9 @@ firewall-правило 8100.
 Снятие галочки историю не откатывает. В PWA — chip на сообщении;
 `/admin` → «Голоса»: редакт. label, маппинг, галочка аутентификации,
 прослушивание образца, merge голосов, управление сэмплами
-(REST `/admin/voices*`, депс `manage_users`). Backfill по существующим
+(REST `/admin/voices*`, депс `manage_users`); drag&drop — сэмпл за ручку
+на другой голос переносит его (`POST .../samples`, строка сэмпла сама
+переезжает), голос за ручку на другой голос — merge (с confirm). Backfill по существующим
 аудио — `concierge backfill-speaker [--limit N] [--conversation-id ID]`
 (идемпотентен).
 

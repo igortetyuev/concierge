@@ -1431,6 +1431,20 @@ a {
   overflow-wrap: anywhere;
 }
 
+.drag-handle {
+  align-self: center;
+  display: inline-flex;
+  flex: none;
+  cursor: grab;
+  color: var(--text-2);
+}
+
+.voice-drop-target {
+  outline: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
 /* ---------- image lightbox ---------- */
 
 .lb {

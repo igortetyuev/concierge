@@ -1,5 +1,6 @@
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, update
@@ -13,6 +14,7 @@ from concierge.agent.models import (
     ModelProvider,
     NamedModel,
 )
+from concierge.agent.providers import http_base_url, provider_api_key
 from concierge.auth import security
 from concierge.auth.dependencies import SessionDep, require
 from concierge.auth.models import Role, User
@@ -412,6 +414,39 @@ async def delete_provider(
     await session.delete(provider)
     await session.commit()
     return {"ok": True}
+
+
+@router.get("/providers/{provider_id}/models")
+async def list_provider_models(
+    provider_id: int,
+    admin: ManageProviders,
+    session: SessionDep,
+    task: str | None = None,
+) -> list[str]:
+    """Proxy `GET {base_url}/models` of an OpenAI-compatible provider —
+    e.g. speaches' local cache or an ollama host. `task` is forwarded
+    verbatim (speaches: text-to-speech / automatic-speech-recognition).
+    """
+    provider = await session.get(ModelProvider, provider_id)
+    if provider is None:
+        raise HTTPException(404, "provider not found")
+    base = http_base_url(provider)
+    if base is None:
+        raise HTTPException(422, "provider has no base_url")
+    api_key = await provider_api_key(session, admin, provider)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{base}/models",
+                params={"task": task} if task else {},
+                headers=headers,
+            )
+            resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"provider /models failed: {e}") from e
+    data = resp.json()
+    return sorted(str(m["id"]) for m in data.get("data", []) if m.get("id"))
 
 
 # ---------- capability bindings ----------

@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 
 import { apiClient, fetchAttachmentObjectUrl } from '../../lib/api'
 import type { AdminUserOut, VoiceOut, VoiceSampleOut } from '../../lib/api'
-import { IconSpeaker, IconTrash } from '../icons'
+import { IconGrip, IconSpeaker, IconTrash } from '../icons'
+
+type DragItem =
+  | { kind: 'voice'; voiceId: number; label: string }
+  | { kind: 'sample'; voiceId: number; attachmentId: number }
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString('ru-RU') : '—'
@@ -23,6 +27,8 @@ export default function AdminVoices() {
   const [mergeFrom, setMergeFrom] = useState<number | null>(null)
   const [mergeInto, setMergeInto] = useState('')
   const [error, setError] = useState('')
+  const [drag, setDrag] = useState<DragItem | null>(null)
+  const [dropTarget, setDropTarget] = useState<number | null>(null)
 
   async function reload() {
     try {
@@ -88,9 +94,7 @@ export default function AdminVoices() {
     }
   }
 
-  async function doMerge(from: VoiceOut) {
-    const intoId = parseInt(mergeInto, 10)
-    if (!Number.isFinite(intoId)) return
+  async function doMerge(from: VoiceOut, intoId: number) {
     try {
       await apiClient.mergeVoice(from.id, intoId)
       setMergeFrom(null)
@@ -124,6 +128,65 @@ export default function AdminVoices() {
     }
   }
 
+  async function moveSample(
+    fromVoiceId: number,
+    toVoiceId: number,
+    attachmentId: number,
+  ) {
+    try {
+      await apiClient.addVoiceSample(toVoiceId, attachmentId)
+      const updates: Record<number, VoiceSampleOut[]> = {}
+      if (samples[fromVoiceId])
+        updates[fromVoiceId] = await apiClient.listVoiceSamples(fromVoiceId)
+      if (samples[toVoiceId])
+        updates[toVoiceId] = await apiClient.listVoiceSamples(toVoiceId)
+      setSamples((cur) => ({ ...cur, ...updates }))
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось перенести сэмпл')
+    }
+  }
+
+  function onDragStart(e: React.DragEvent, item: DragItem) {
+    e.dataTransfer.setData('text/plain', '')
+    e.dataTransfer.effectAllowed = 'move'
+    setDrag(item)
+  }
+
+  function onDragEnd() {
+    setDrag(null)
+    setDropTarget(null)
+  }
+
+  function onVoiceDragOver(e: React.DragEvent, v: VoiceOut) {
+    if (!drag || drag.voiceId === v.id) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropTarget(v.id)
+  }
+
+  function onVoiceDragLeave(e: React.DragEvent, v: VoiceOut) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+      setDropTarget((t) => (t === v.id ? null : t))
+  }
+
+  function onVoiceDrop(e: React.DragEvent, v: VoiceOut) {
+    e.preventDefault()
+    const item = drag
+    onDragEnd()
+    if (!item || item.voiceId === v.id) return
+    if (item.kind === 'voice') {
+      const src = voices?.find((o) => o.id === item.voiceId)
+      if (
+        src &&
+        window.confirm(`Объединить «${item.label}» в «${v.label}»?`)
+      )
+        void doMerge(src, v.id)
+    } else {
+      void moveSample(item.voiceId, v.id, item.attachmentId)
+    }
+  }
+
   return (
     <section className="details-section">
       <h3>Голоса</h3>
@@ -135,8 +198,29 @@ export default function AdminVoices() {
         </div>
       ) : (
         voices.map((v) => (
-          <div key={v.id}>
+          <div
+            key={v.id}
+            className={dropTarget === v.id ? 'voice-drop-target' : undefined}
+            onDragOver={(e) => onVoiceDragOver(e, v)}
+            onDragLeave={(e) => onVoiceDragLeave(e, v)}
+            onDrop={(e) => onVoiceDrop(e, v)}
+          >
             <div className="memory-item">
+              <span
+                className="drag-handle"
+                title="Перетащите на другой голос, чтобы объединить"
+                draggable
+                onDragStart={(e) =>
+                  onDragStart(e, {
+                    kind: 'voice',
+                    voiceId: v.id,
+                    label: v.label,
+                  })
+                }
+                onDragEnd={onDragEnd}
+              >
+                <IconGrip size={14} />
+              </span>
               <span className="memory-item-text">
                 <input
                   className="voice-label"
@@ -232,7 +316,7 @@ export default function AdminVoices() {
                   <button
                     className="btn primary"
                     disabled={!mergeInto}
-                    onClick={() => void doMerge(v)}
+                    onClick={() => void doMerge(v, parseInt(mergeInto, 10))}
                   >
                     Объединить
                   </button>
@@ -243,6 +327,21 @@ export default function AdminVoices() {
               <div className="admin-edit">
                 {(samples[v.id] ?? []).map((s) => (
                   <div key={s.id} className="memory-item">
+                    <span
+                      className="drag-handle"
+                      title="Перетащите на другой голос, чтобы перенести сэмпл"
+                      draggable
+                      onDragStart={(e) =>
+                        onDragStart(e, {
+                          kind: 'sample',
+                          voiceId: v.id,
+                          attachmentId: s.attachment_id,
+                        })
+                      }
+                      onDragEnd={onDragEnd}
+                    >
+                      <IconGrip size={14} />
+                    </span>
                     <span className="memory-item-text">
                       {s.attachment_name}
                       <span className="muted">
