@@ -38,6 +38,11 @@ deploy/deploy.sh      # rsync -> uv sync -> alembic upgrade head -> restart
 curl -k https://$CONCIERGE_DOMAIN/healthz   # -> {"db":"ok","qdrant":"ok"}
 ```
 
+Web-root (`$CONCIERGE_DEST/web`) чистится `rsync --delete`. Каталог верхнего
+уровня с файлом-меткой `.keep` считается чужим и исключается из деплоя —
+сторонние статичные подсайты кладутся туда же; им отдаётся `<dir>/index.html`
+(`try_files` пробует `{path}/index.html` до SPA-fallback).
+
 Конфигурация приложения на сервере — через env с префиксом `CONCIERGE_`
 (`/etc/concierge/.env` на хосте).
 
@@ -216,6 +221,10 @@ capability `chat` старые сообщения сворачиваются в 
 `mcp.env.analytics`). Сервер — свой проект `mcp_analytics` (uv + hatchling,
 заменил postgres-mcp): кроме read-only `query` даёт `import_rows` и
 `load_attachment` с записью в схему `sandbox`.
+С мака тот же сервер доступен как stdio через SSH — Devin MCP `analytics`
+в `.devin/mcp_config.local.json`: `ssh box env HOME=… DATABASE_URL=…
+ANALYTICS_BLOB_DIR=… …/mcp-analytics` (значения env — те же, что в setting
+`mcp.env.analytics`; trust-auth `analytics_ro` работает, т.к. процесс на хосте).
 
 Синхронизация из `concierge`: НЕ logical replication — на ALT-сборке нет
 `pgoutput` (проверено: rpm postgresql14/15-server его не содержит, chDB не
@@ -252,6 +261,47 @@ ON CONFLICT, id стабильны между append'ами), факты лож�
 NULL dim_id. Маппинг dim-колонок пишется в `sandbox._dims_registry`.
 Конкурентные вызовы сериализуются advisory-lock'ом на схему. Без
 авто-детекции измерений, SCD и FK на dim_id.
+
+## MCP-серверы с браузерным доступом (ozon, browserdata)
+
+`ozon` — HTTP на макбук: transport `http`,
+`http://macbook-2.local:8399/mcp/`. На маке это launchd-агент
+`local.mcp-ozon` (`~/Library/LaunchAgents/local.mcp-ozon.plist`,
+`MCP_OZON_TRANSPORT=http`, host 0.0.0.0, порт 8399, KeepAlive) над проектом
+`~/projects/mcp_ozon` — держит постоянный ws к Chrome inspect-mode. Промпт
+«Разрешить удаленную отладку» (на каждый новый ws) прокликивает второй
+агент `local.mcp-ozon-allow` — watchdog из osascript
+(`scripts/allow_debugging_watchdog.applescript`; osascript как executable
+джоба = правильная TCC-идентичность для Accessibility, у дочерних процессов
+сервиса её нет). Работает только пока мак в сети и не спит. Если Ozon
+отвечает антиботом (403 + challenge HTML), воркер-таб надо прогнать
+навигацией по ozon.ru — JS-челлендж сам пройдёт и API разблокируется.
+Запасной вариант (сейчас не используется): локальный запуск на box,
+`/srv/concierge/mcp/mcp_ozon` + Chromium с Mac-фингерпринтом — признан
+слишком хрупким (GPU-zygote падает при запуске не из десктоп-сессии,
+скринсейвер/окна на xrdp), детали — в `mcp_ozon/CLAUDE.md` «Deployment on
+box».
+
+`browserdata` — stdio через SSH на макбук:
+`ssh -o BatchMode=yes mac /Users/igor/projects/mcp_browserdata/.venv/bin/mcp-browserdata`
+(алиас `mac` = macbook-2.local в `~/.ssh/config` пользователя igor, ключ
+`~/.ssh/concierge_mac`; тот же паттерн, что доступ к `analytics` с мака,
+только наоборот). Живёт на маке: нужны файлы профилей и keychain. Работает
+только пока мак в сети и не спит. Отдаёт пароли в открытом виде — гейтинг
+только `mcp_servers` в ролях.
+
+## Playwright (браузер агента)
+
+`playwright` — `@playwright/mcp@0.0.85` на box:
+`/srv/concierge/mcp/mcp_playwright` (npm-проект, бинарь
+`node_modules/.bin/playwright-mcp`), флаги `--browser chromium --headless
+--output-dir /srv/concierge/mcp/mcp_playwright/output`. Браузер — bundled
+chromium-headless-shell в `~/.cache/ms-playwright` (ставится
+`node_modules/.bin/playwright install chromium`; системный /bin/chromium не
+используется). Профиль persistent (логины/cookies переживают прогоны;
+параллельные прогоны с тем же профилем конфликтуют — chromium singleton),
+снапшоты и загрузки пишутся в output-dir. При апгрейде версии — заново
+`npm i @playwright/mcp@X` + `playwright install chromium`.
 
 ## Удалённые сессии
 

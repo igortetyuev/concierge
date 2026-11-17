@@ -44,7 +44,9 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        // /api — backend; /myschool — third-party static subsite (.keep dir);
+        // /root.crt — CA cert users download to trust `tls internal`.
+        navigateFallbackDenylist: [/^\/api\//, /^\/myschool(\/|$)/, /^\/root\.crt$/],
       },
     }),
   ],

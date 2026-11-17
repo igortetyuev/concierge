@@ -27,7 +27,14 @@ rsync -az --delete \
     --exclude '*.egg-info' \
     server/ "$REMOTE:$DEST/server/"
 
-rsync -az --delete web/dist/ "$REMOTE:$DEST/web/"
+# Top-level dirs in the web root containing a .keep file belong to other
+# projects — exclude them so --delete doesn't remove them.
+KEEP_EXCLUDES=()
+while IFS= read -r d; do
+    KEEP_EXCLUDES+=(--exclude="/$d/")
+done < <(ssh "$REMOTE" "for d in $DEST/web/*/; do [ -f \"\$d.keep\" ] && basename \"\$d\"; done")
+
+rsync -az --delete ${KEEP_EXCLUDES[@]+"${KEEP_EXCLUDES[@]}"} web/dist/ "$REMOTE:$DEST/web/"
 
 rsync -az deploy/ "$REMOTE:$DEST/deploy/"
 

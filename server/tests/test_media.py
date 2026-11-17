@@ -350,6 +350,15 @@ def test_stt_hallucination_filter() -> None:
     assert not stt._hallucinated("спасибо")
 
 
+def test_stt_repetition_loop() -> None:
+    """Decoder loops ("Кнопка 4, 5, 5, 1, 1, 1, 1, ...") are dropped."""
+    loop = "Кнопка 4, 5, 5, " + ", ".join(["1"] * 40)
+    assert stt._hallucinated(loop)
+    assert stt._hallucinated("да " * 25)
+    assert not stt._hallucinated("нет нет нет, я не согласен")
+    assert not stt._hallucinated("раз два три, " + "четыре, " * 10 + "пять")
+
+
 @needs_ffmpeg
 async def test_noise_transcript_dropped(
     engine, client: httpx.AsyncClient

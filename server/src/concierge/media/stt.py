@@ -45,6 +45,10 @@ _HALLUCINATION_PREFIXES = (
 _SEGMENT_SPLIT = re.compile(r"[.!?\n\r…]+")
 # Initials ("A.Sinetskaya") must not split credit segments at the period.
 _INITIALS = re.compile(r"\b([^\W\d_])\.(?=\s*[^\W\d_])")
+# On faint speech/noise the decoder loops a single token dozens of times
+# ("Кнопка 4, 5, 5, 1, 1, 1, 1, ..."). No real utterance has a run this long.
+_TOKEN = re.compile(r"\w+")
+_REPEAT_RUN = 20
 
 
 def _normalized(text: str) -> str:
@@ -55,9 +59,23 @@ def _known_artifact(seg: str) -> bool:
     return seg in _HALLUCINATION_PHRASES or seg.startswith(_HALLUCINATION_PREFIXES)
 
 
+def _repetition_loop(text: str) -> bool:
+    run = 1
+    prev = None
+    for tok in _TOKEN.findall(text.lower()):
+        run = run + 1 if tok == prev else 1
+        if run >= _REPEAT_RUN:
+            return True
+        prev = tok
+    return False
+
+
 def _hallucinated(text: str) -> bool:
     """True when the transcript carries no real speech: either no words at all
-    (punctuation/notes only) or every segment is a known noise artifact."""
+    (punctuation/notes only), a decoder repetition loop, or every segment is
+    a known noise artifact."""
+    if _repetition_loop(text):
+        return True
     segments = [
         s
         for s in (
