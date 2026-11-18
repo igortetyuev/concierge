@@ -1,6 +1,7 @@
 """Scheduler: recurrence math, job firing, session rules, tools, REST."""
 
 from datetime import datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -435,6 +436,31 @@ async def test_missed_fire_coalesces_and_grace(engine, client) -> None:
         await session.commit()
     fired = await service.fire_due(much_later)
     assert fired == 0
+
+
+async def test_fire_retry_on_failure(engine, monkeypatch) -> None:
+    """A failing fire is retried MAX_FIRE_ATTEMPTS times instead of the
+    one-shot job vanishing unfired."""
+    user = await make_user("sched_q", "adult")
+    at_local = recurrence.utc_to_local(db.utcnow(), TZ) + timedelta(minutes=5)
+    job = await _make_job(user, "command", ScheduleSpec(at=at_local))
+    calls = 0
+
+    async def boom(*_a: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "fire", boom)
+    nxt = job.next_run_at
+    for _ in range(service.MAX_FIRE_ATTEMPTS):
+        assert nxt is not None
+        assert await service.fire_due(nxt) == 0
+        async with db.get_sessionmaker()() as session:
+            j = await session.get(ScheduledJob, job.id)
+            nxt = j.next_run_at if j is not None else None
+    assert calls == service.MAX_FIRE_ATTEMPTS
+    assert nxt is None  # exhausted one-shot deleted after the last attempt
 
 
 async def test_pause_and_resume(engine, client) -> None:

@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 
 MAX_JOBS_PER_USER = 100
 MISSED_GRACE = timedelta(hours=12)
+MAX_FIRE_ATTEMPTS = 3
+FIRE_RETRY_DELAY = timedelta(minutes=1)
 
 _KINDS = ("command", "reminder")
 
@@ -263,7 +265,8 @@ async def fire_due(now: datetime) -> int:
 
     Each job's next_run_at is advanced (and committed) before firing, so a
     fire is at-most-once. Missed occurrences older than MISSED_GRACE are
-    skipped; younger misses coalesce into a single late fire. Exhausted
+    skipped; younger misses coalesce into a single late fire. A failed fire
+    is retried a few times (a one-shot must not vanish unfired). Exhausted
     patterns (one-shot, until/count) are deleted after firing.
     """
     fired = 0
@@ -293,18 +296,28 @@ async def fire_due(now: datetime) -> int:
             job.fire_count += 1
             exhausted = job.next_run_at is None
             await session.commit()  # claim
+        fired_this = False
         if now - occurrence <= MISSED_GRACE:
             try:
                 await fire(job_id, occurrence, now)
+                fired_this = True
+                fired += 1
             except Exception:
                 log.exception("scheduled fire failed job=%s", job_id)
-            fired += 1
         else:
             log.warning(
                 "scheduled fire skipped (too late: %s) job=%s",
                 now - occurrence,
                 job_id,
             )
+        if not fired_this and now - occurrence <= MISSED_GRACE:
+            # Retry instead of dropping the occurrence.
+            async with session_maker() as session:
+                job = await session.get(ScheduledJob, job_id)
+                if job is not None and job.fire_count < MAX_FIRE_ATTEMPTS:
+                    job.next_run_at = now + FIRE_RETRY_DELAY
+                    await session.commit()
+                    continue
         if exhausted:
             async with session_maker() as session:
                 job = await session.get(ScheduledJob, job_id)
