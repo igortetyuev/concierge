@@ -86,6 +86,11 @@ export default function Markdown({
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, remarkMentions(re)]}
         rehypePlugins={[rehypeKatex]}
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a {...props} target="_blank" rel="noopener noreferrer" />
+          ),
+        }}
       >
         {normalizeMathDelims(text)}
       </ReactMarkdown>
