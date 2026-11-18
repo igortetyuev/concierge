@@ -61,7 +61,7 @@ export default function DetailsPanel({ convId }: { convId: number }) {
   }
 
   return (
-    <div className="details">
+    <div className="details details-pop">
       <header className="details-head">
         <h2>Детали</h2>
         <button

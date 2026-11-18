@@ -1,10 +1,7 @@
 import { useParams } from 'react-router'
-import { useStore } from '@nanostores/react'
 
-import { $detailsOpen } from '../store/ui'
 import ChatView from './ChatView'
 import ConversationList from './ConversationList'
-import DetailsPanel from './DetailsPanel'
 import MemoryView from './MemoryView'
 import SettingsView from './SettingsView'
 import AdminView from './admin/AdminView'
@@ -13,13 +10,10 @@ import { IconChat } from './icons'
 export default function Shell({ view }: { view?: 'memory' | 'settings' | 'admin' }) {
   const { id } = useParams()
   const convId = id ? Number(id) : null
-  const detailsOpen = useStore($detailsOpen)
   const mainOpen = convId !== null || view !== undefined
 
   return (
-    <div
-      className={`shell${mainOpen ? ' has-chat' : ''}${detailsOpen ? ' show-details' : ''}`}
-    >
+    <div className={`shell${mainOpen ? ' has-chat' : ''}`}>
       <aside className="shell-list">
         <ConversationList />
       </aside>
@@ -39,17 +33,6 @@ export default function Shell({ view }: { view?: 'memory' | 'settings' | 'admin'
           </div>
         )}
       </main>
-      {detailsOpen && (
-        <button
-          className="details-scrim"
-          onClick={() => $detailsOpen.set(false)}
-          aria-label="Закрыть панель"
-          tabIndex={-1}
-        />
-      )}
-      <aside className="shell-details">
-        {convId ? <DetailsPanel convId={convId} /> : null}
-      </aside>
     </div>
   )
 }

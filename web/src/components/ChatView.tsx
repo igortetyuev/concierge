@@ -34,6 +34,7 @@ import type { PendingMessage, StreamState } from '../store/messages'
 import { markLatestRead } from '../store/realtime'
 import { $detailsOpen } from '../store/ui'
 import Composer from './Composer'
+import DetailsPanel from './DetailsPanel'
 import ForwardDialog from './ForwardDialog'
 import MessageParts, { CopyButton, ToolChip } from './MessageParts'
 import Markdown from './Markdown'
@@ -194,6 +195,7 @@ export default function ChatView({ convId }: { convId: number }) {
   const loadingMore = useStore($loadingMore)[convId] ?? false
   const online = useStore($online)[convId] ?? EMPTY_IDS
   const readSeqs = useStore($readSeqs)[convId] ?? EMPTY_READ
+  const detailsOpen = useStore($detailsOpen)
   useStore($typing) // subscribe for typing expiry updates
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -365,12 +367,24 @@ export default function ChatView({ convId }: { convId: number }) {
         )}
         <button
           className="icon-btn"
-          onClick={() => $detailsOpen.set(!$detailsOpen.get())}
+          onClick={() => $detailsOpen.set(!detailsOpen)}
           aria-label="Детали"
+          aria-expanded={detailsOpen}
           title="Детали"
         >
           <IconInfo />
         </button>
+        {detailsOpen && (
+          <>
+            <button
+              className="pop-scrim"
+              onClick={() => $detailsOpen.set(false)}
+              aria-label="Закрыть панель"
+              tabIndex={-1}
+            />
+            <DetailsPanel convId={convId} />
+          </>
+        )}
       </header>
 
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>

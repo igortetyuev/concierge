@@ -415,52 +415,7 @@ a {
 
 @media (min-width: 1024px) {
   .shell {
-    grid-template-columns: 320px 1fr 300px;
-  }
-
-  .shell-details {
-    display: flex;
-    border-left: 1px solid var(--border);
-    background: var(--surface);
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .details-close,
-  .details-scrim {
-    display: none;
-  }
-}
-
-@media (max-width: 1023px) {
-  .shell-details {
-    display: none;
-  }
-
-  .shell.show-details .shell-details {
-    position: fixed;
-    top: var(--vvo);
-    right: 0;
-    height: var(--vvh);
-    z-index: 40;
-    display: flex;
-    width: min(340px, 92vw);
-    border-left: 1px solid var(--border);
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-
-  .details-scrim {
-    position: fixed;
-    top: var(--vvo);
-    right: 0;
-    left: 0;
-    height: var(--vvh);
-    z-index: 39;
-    border: 0;
-    background: var(--scrim);
-    cursor: default;
+    grid-template-columns: 320px 1fr;
   }
 }
 
@@ -683,6 +638,7 @@ a {
   padding-top: calc(6px + env(safe-area-inset-top));
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  position: relative;
 }
 
 .chat-head-text {
@@ -1307,7 +1263,7 @@ a {
   gap: 12px;
 }
 
-/* ---------- details panel ---------- */
+/* ---------- details popover ---------- */
 
 .details {
   display: flex;
@@ -1315,6 +1271,37 @@ a {
   width: 100%;
   height: 100%;
   min-height: 0;
+}
+
+.details-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  width: min(360px, calc(100vw - 16px));
+  height: auto;
+  max-height: calc(var(--vvh) - 72px);
+  z-index: 45;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.details-pop .details-head {
+  padding-top: 8px;
+}
+
+.pop-scrim {
+  position: fixed;
+  top: var(--vvo);
+  right: 0;
+  left: 0;
+  height: var(--vvh);
+  z-index: 44;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
 }
 
 .details-head {

@@ -262,6 +262,16 @@ NULL dim_id. Маппинг dim-колонок пишется в `sandbox._dims_
 Конкурентные вызовы сериализуются advisory-lock'ом на схему. Без
 авто-детекции измерений, SCD и FK на dim_id.
 
+Школьные данные (`sandbox.school_*`) — источник не concierge, а проект
+`~/projects/myschool` на маке: после каждого обновления из приложения
+«Моя школа» `.claude/skills/analytics/push.py` делает full refresh по ssh
+(`analytics_ro`, psql на localhost). `school_schedule` (dow, lesson,
+start_time, subject_odd/even — чередование по чётности ISO-недели),
+`school_homework` (date — на какой день задано, text, materials jsonb),
+`school_grades` (mark/value/weight/work_type/…, class_stats jsonb),
+`school_quarters`, `school_meta` (generated_at/loaded_at — свежесть).
+Схема описана агенту в `agent.system_prompt` (блок аналитики).
+
 ## MCP-серверы с браузерным доступом (ozon, browserdata)
 
 `ozon` — HTTP на макбук: transport `http`,
