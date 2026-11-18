@@ -6,7 +6,7 @@ import socket
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from html import unescape
 from typing import Any, Literal
 from urllib.parse import urljoin, urlparse
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.agent import providers
 from concierge.agent import service as agent_service
+from concierge.agent.prompt import local_now
 from concierge.auth.models import User
 from concierge.auth.permissions import has_permission
 from concierge.channels import ChannelEvent, get_hub
@@ -71,8 +72,8 @@ async def search_messages(
 
 
 def current_datetime() -> str:
-    """Return the current date and time (UTC, ISO 8601)."""
-    return datetime.now(UTC).isoformat()
+    """Return the current date and time in the family timezone (ISO 8601)."""
+    return local_now().isoformat()
 
 
 async def remember(

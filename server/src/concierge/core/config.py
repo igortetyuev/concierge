@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     invite_ttl_hours: int = 72
     cookie_secure: bool = False
 
+    # Family timezone for the agent's "current date/time" (prompt + tool).
+    timezone: str = "Europe/Kaliningrad"
+
     # Content-addressed blob store for attachments.
     blob_dir: str = "data/blobs"
     ffmpeg_bin: str = "ffmpeg"

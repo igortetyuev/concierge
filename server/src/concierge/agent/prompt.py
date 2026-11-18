@@ -1,12 +1,30 @@
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.auth.models import User
 from concierge.conversations.models import Conversation
+from concierge.core.config import get_settings
 from concierge.settings import service as settings_service
 
 DEFAULT_ASSISTANT_NAME = "Консьерж"
+
+_WEEKDAYS = (
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+)
+
+
+def local_now() -> datetime:
+    """Current time in the configured family timezone."""
+    return datetime.now(ZoneInfo(get_settings().timezone))
 
 DEFAULT_SYSTEM_PROMPT = (
     "Ты — {name}, семейный агент-консьерж. Отвечай по-русски, кратко и по "
@@ -53,6 +71,13 @@ async def system_prompt(
     if len(member_names) > 1:
         ctx += ", участники: " + ", ".join(member_names)
     chunks.append(ctx)
+
+    now = local_now()
+    off = now.strftime("%z")
+    chunks.append(
+        f"[Сейчас] {_WEEKDAYS[now.weekday()]}, "
+        f"{now:%d.%m.%Y %H:%M} ({now:%Z}, UTC{off[:3]}:{off[3:]})"
+    )
 
     if memory_block:
         chunks.append(f"[Память]\n{memory_block}")
