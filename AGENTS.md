@@ -35,7 +35,7 @@ prod — Caddy `handle_path`). Иконки: `node scripts/generate-icons.mjs`.
 ```bash
 deploy/provision.sh   # одноразовая инициализация (PostgreSQL, Caddy, uv, systemd)
 deploy/deploy.sh      # rsync -> uv sync -> alembic upgrade head -> restart
-curl -k https://$CONCIERGE_DOMAIN/healthz   # -> {"db":"ok","qdrant":"ok"}
+curl -k https://$CONCIERGE_DOMAIN/api/healthz   # -> {"db":"ok","qdrant":"ok"}
 ```
 
 Web-root (`$CONCIERGE_DEST/web`) чистится `rsync --delete`. Каталог верхнего
@@ -59,8 +59,18 @@ Ollama на отдельном Windows-хосте в LAN: `http://<win-host>:114
 `ollama-lan` (bge-m3): коллекции Qdrant `concierge_memory__bgem3` и
 `concierge_messages__bgem3`. Без binding `remember`/`recall` молча деградируют
 (запись в `memory_items` есть, векторов нет) — смотри warning в journald.
-Автозапуск на Windows — Run-ключ `Ollama`, `OLLAMA_HOST=0.0.0.0` в user env,
-firewall-правило для порта 11434.
+Автозапуск на Windows — задача планировщика `Concierge-Ollama` →
+`C:\Users\<user>\ollama-home\run-ollama.ps1` (`OLLAMA_HOST=0.0.0.0`,
+`ollama.exe serve`, лог `ollama.log`; трей-приложение `ollama app.exe` не
+используется — автообновлений нет), firewall-правило для порта 11434.
+Все три LAN-сервиса (Ollama, Speaches, SpeakerId) — задачи `Concierge-*`:
+триггер «при запуске системы», principal igor с LogonType S4U (без пароля,
+без интерактивного входа; процессы в session 0, CUDA там работает),
+ExecutionTimeLimit 0, рестарт каждую минуту. Раньше были HKCU Run-ключи —
+после перезагрузки с входом другого пользователя (tikhon) сервисы не
+стартовали и concierge сыпал `httpx.ConnectError` (бэкап ключей —
+`C:\Users\<user>\run-keys-backup.reg`). Управление:
+`Get-ScheduledTask Concierge-*`, `Start-/Stop-ScheduledTask`.
 На сервере заведён провайдер `ollama-lan` (kind `ollama`, тот же base_url); capability `vision`
 привязана к нему как `qwen3-vl:4b-instruct` (инференс на GPU).
 
@@ -71,7 +81,7 @@ cwd `C:\Users\<user>\speaches-home`, лог `speaches.log`):
 `http://<win-host>:8000/v1`, whisper `large-v3-turbo` на GPU
 (`WHISPER__INFERENCE_DEVICE=cuda` в `run-speaches.ps1`, GTX 1070;
 ~1 с на короткий клип против ~11 с на CPU; алиас `whisper-1`),
-Kokoro TTS (`tts-1`). Автозапуск — Run-ключ `Speaches`,
+Kokoro TTS (`tts-1`). Автозапуск — задача `Concierge-Speaches` (см. Эмбеддинги),
 firewall-правило для порта 8000. Закреплено: `av<13`, `huggingface-hub<1.0` (конфликты
 только с неиспользуемыми aiortc/gradio). В `run-speaches.ps1` выставлен
 `HF_HUB_OFFLINE=1`: faster-whisper при (пере)загрузке модели ходит на
@@ -113,8 +123,8 @@ warning-безопасная). Эмбеддинг считает соседни�
 (FastAPI + SpeechBrain ECAPA-TDNN `speechbrain/spkrec-ecapa-voxceleb`,
 192-dim, torch CPU): `POST /embed` (multipart wav) →
 `{"embedding": [...], "dim": 192}`, `GET /healthz`. Развёртывание на
-Windows-хосте по образцу Speaches: venv + `pip install .`, Run-ключ
-`SpeakerId` → `speakerid.exe` (env `SPEAKERID_PORT`, дефолт 8100;
+Windows-хосте по образцу Speaches: venv + `pip install .`, задача
+`Concierge-SpeakerId` → `run-speakerid.ps1` → `speakerid.exe` (env `SPEAKERID_PORT`, дефолт 8100;
 `HF_HUB_OFFLINE=1` после первого прогрева — модель ~80 МБ качается с HF),
 firewall-правило 8100.
 
