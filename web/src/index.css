@@ -550,6 +550,44 @@ a {
   text-align: center;
 }
 
+.convgroup-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 14px;
+  border: 0;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.convgroup-head:hover {
+  color: var(--text);
+}
+
+.convgroup-chev {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.convgroup-chev.collapsed {
+  transform: rotate(-90deg);
+}
+
+.convgroup-count {
+  margin-left: auto;
+  font-weight: 400;
+}
+
 .conv {
   display: flex;
   align-items: center;

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
-import type { MessageOut } from '../lib/api'
+import type { ConversationOut, MessageOut } from '../lib/api'
 import { fmtListDate, initials } from '../lib/format'
 import { logout, $user } from '../store/auth'
 import {
@@ -18,7 +18,55 @@ import {
 import { messageText } from '../store/messages'
 import NewGroupDialog from './NewGroupDialog'
 import VoiceQuick from './VoiceQuick'
-import { IconBook, IconChat, IconLogout, IconPlus, IconSearch, IconSettings, IconTool, IconUsers } from './icons'
+import { IconBook, IconChat, IconChevron, IconLogout, IconPlus, IconSearch, IconSettings, IconTool, IconUsers } from './icons'
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+interface ConvGroup {
+  key: string
+  label: string
+  items: ConversationOut[]
+}
+
+function monthLabel(d: Date, nowYear: number): string {
+  const month = d.toLocaleDateString('ru-RU', { month: 'long' })
+  const name = month.charAt(0).toUpperCase() + month.slice(1)
+  return d.getFullYear() === nowYear ? name : `${name} ${d.getFullYear()}`
+}
+
+/** Группировка списка (отсортированного по updated_at desc): сегодня,
+ *  прошедшая неделя без сегодня, дальше календарные месяцы. */
+function groupConvs(list: ConversationOut[]): ConvGroup[] {
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekStart = todayStart - 7 * DAY_MS
+  const groups: ConvGroup[] = []
+  const byKey = new Map<string, ConvGroup>()
+  for (const c of list) {
+    const t = c.updated_at ? new Date(c.updated_at).getTime() : 0
+    let key: string
+    let label: string
+    if (t >= todayStart) {
+      key = 'today'
+      label = 'Сегодня'
+    } else if (t >= weekStart) {
+      key = 'week'
+      label = 'Прошлая неделя'
+    } else {
+      const d = new Date(t)
+      key = `m-${d.getFullYear()}-${d.getMonth()}`
+      label = monthLabel(d, now.getFullYear())
+    }
+    let g = byKey.get(key)
+    if (!g) {
+      g = { key, label, items: [] }
+      byKey.set(key, g)
+      groups.push(g)
+    }
+    g.items.push(c)
+  }
+  return groups
+}
 
 export default function ConversationList() {
   const navigate = useNavigate()
@@ -34,6 +82,7 @@ export default function ConversationList() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MessageOut[] | null>(null)
   const [showNewGroup, setShowNewGroup] = useState(false)
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const debounce = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
@@ -66,6 +115,41 @@ export default function ConversationList() {
         : c.status === 'active',
   )
   const convById = new Map(convs.map((c) => [c.id, c]))
+  const groups = groupConvs(filtered)
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function renderConv(c: ConversationOut) {
+    return (
+      <Link
+        key={c.id}
+        to={`/c/${c.id}`}
+        role="listitem"
+        className={`conv${c.id === activeId ? ' active' : ''}`}
+      >
+        <span className="avatar">{c.kind === 'group' ? <IconUsers size={18} /> : initials(convTitle(c) || 'С')}</span>
+        <span className="conv-body">
+          <span className="conv-title">
+            {c.kind === 'group' && <IconUsers size={13} className="conv-kind" />}
+            {convTitle(c)}
+          </span>
+          <span className="conv-preview">{previews[c.id] ?? ''}</span>
+        </span>
+        <span className="conv-meta">
+          <span className="conv-time">{fmtListDate(c.updated_at)}</span>
+          {(unread[c.id] ?? 0) > 0 && <span className="badge">{unread[c.id]}</span>}
+        </span>
+      </Link>
+    )
+  }
+
   const isAdmin =
     me?.permissions['*'] === true ||
     ['manage_users', 'manage_providers', 'manage_mcp', 'manage_code_agents'].some(
@@ -168,27 +252,26 @@ export default function ConversationList() {
             {filtered.length === 0 && status === 'loading' && (
               <div className="convlist-empty muted">Загрузка…</div>
             )}
-            {filtered.map((c) => (
-              <Link
-                key={c.id}
-                to={`/c/${c.id}`}
-                role="listitem"
-                className={`conv${c.id === activeId ? ' active' : ''}`}
-              >
-                <span className="avatar">{c.kind === 'group' ? <IconUsers size={18} /> : initials(convTitle(c) || 'С')}</span>
-                <span className="conv-body">
-                  <span className="conv-title">
-                    {c.kind === 'group' && <IconUsers size={13} className="conv-kind" />}
-                    {convTitle(c)}
-                  </span>
-                  <span className="conv-preview">{previews[c.id] ?? ''}</span>
-                </span>
-                <span className="conv-meta">
-                  <span className="conv-time">{fmtListDate(c.updated_at)}</span>
-                  {(unread[c.id] ?? 0) > 0 && <span className="badge">{unread[c.id]}</span>}
-                </span>
-              </Link>
-            ))}
+            {groups.map((g) => {
+              const collapsed = collapsedGroups.has(g.key)
+              return (
+                <div key={g.key}>
+                  <button
+                    className="convgroup-head"
+                    aria-expanded={!collapsed}
+                    onClick={() => toggleGroup(g.key)}
+                  >
+                    <IconChevron
+                      size={14}
+                      className={`convgroup-chev${collapsed ? ' collapsed' : ''}`}
+                    />
+                    <span>{g.label}</span>
+                    <span className="convgroup-count">{g.items.length}</span>
+                  </button>
+                  {!collapsed && g.items.map(renderConv)}
+                </div>
+              )
+            })}
           </div>
         </>
       ) : (

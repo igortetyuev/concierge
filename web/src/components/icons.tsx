@@ -51,6 +51,7 @@ export const IconCheck = svg('M20 6L9 17l-5-5')
 export const IconCheckAll = svg('M18 6L7 17l-5-5M22 10l-7.5 7.5L13 16')
 export const IconForward = svg('M15 14l5-5-5-5', 'M4 20v-7a4 4 0 0 1 4-4h12')
 export const IconDown = svg('M12 5v14M5 12l7 7 7-7')
+export const IconChevron = svg('M6 9l6 6 6-6')
 export const IconEdit = svg(
   'M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z',
 )
