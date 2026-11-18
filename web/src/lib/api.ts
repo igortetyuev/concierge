@@ -43,6 +43,22 @@ export interface SpeakerInfo {
   score: number
 }
 
+export interface ScheduleOut {
+  id: number
+  kind: string
+  title: string
+  text: string
+  schedule: string
+  session_mode: string
+  conversation_id: number | null
+  next_run_at: string | null
+  next_runs: string[]
+  paused_until: string | null
+  last_run_at: string | null
+  fire_count: number
+  created_at: string | null
+}
+
 export interface MessagePart {
   type: string
   text?: string
@@ -514,6 +530,12 @@ export const apiClient = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, value }),
     }),
+  listSchedules: () => api<ScheduleOut[]>('/schedules'),
+  patchSchedule: (id: number, pausedUntil: string | null) =>
+    patchFn<ScheduleOut>(`/schedules/${id}`, { paused_until: pausedUntil }),
+  deleteSchedule: (id: number) =>
+    api<{ ok: boolean }>(`/schedules/${id}`, { method: 'DELETE' }),
+
   search: (q: string, limit = 20) =>
     api<MessageOut[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 

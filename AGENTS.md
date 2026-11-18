@@ -174,6 +174,46 @@ firewall-правило 8100.
 ключ (неразрешимый ref считается литеральным ключом), модель
 `gpt://<folder_id>/aliceai-llm/latest`.
 
+## Планировщик (события и напоминания)
+
+Таблица `scheduled_jobs` (миграция 0013) + фоновый воркер
+`schedule/worker.py` в lifespan (`api/app.py`), образец — memory indexer:
+спит до ближайшего `next_run_at` (макс 60 с), `kick()` после любых
+изменений. Один uvicorn-процесс — воркер in-process.
+
+Паттерн — `schedule/recurrence.py` `ScheduleSpec` (структурный, не RRULE):
+однократно `at`/`delay_minutes` или `freq` (minutely|hourly|daily|weekly|
+monthly|yearly) + `interval`, `weekdays`, `times` ("HH:MM"), `month_days`
+(-1 = последнее), `start/until/count`, `dates` (доп. срабатывания),
+`exclude_dates`. Расчёт — dateutil rruleset над naive-local временем
+семьи (`get_settings().timezone`), в БД — naive UTC.
+
+Срабатывание (`schedule/service.py` `fire`): user-authored сообщение
+`source_channel="schedule"`, парт `{"type":"text", text, scheduled:{...}}`,
+`client_msg_id="sched:{id}:{occurrence}"` (идемпотентность), обычный ран
+агента от имени владельца (`wait=True` — ждёт lock, не пропускается;
+триггер считается упоминанием → будит `reply_mode=mention`). В PWA такие
+сообщения — системная строка «⏰ «title»: text», TG-sink их не зеркалит.
+Правила сессии: `command` с мин. интервалом ≥24 ч (или однократная) →
+новая личная сессия на каждое срабатывание (`origin="schedule"`,
+`settings.schedule_job_id`); чаще → переиспользуется `job.conversation_id`
+(новая при первом срабатывании/архиве/удалении). `reminder` → сессия,
+где попросили: archived → восстанавливается в active, deleted/не
+участник → новая личная. Claim: `next_run_at` сдвигается и коммитится до
+запуска; пропуски >12 ч пропускаются (warning), ≤12 ч — одно позднее
+срабатывание; исчерпанные (однократные/until/count) удаляются. Пауза —
+`paused_until`, срабатывания внутри пропускаются; отмена = DELETE строки.
+Лимит 100 паттернов на пользователя.
+
+Инструменты агента (`schedule/tools.py`, в `CORE_TOOLS`, гейтинг
+`tools.allow/deny`): `schedule_task` (kind command|reminder),
+`list_scheduled_tasks`, `pause/resume/cancel_scheduled_task` — только
+свои. REST (`api/schedule.py`, только свои): `GET /schedules`,
+`PATCH /schedules/{id}` `{paused_until: iso|null}` (null = возобновить),
+`DELETE /schedules/{id}` → `{"ok": true}`. PWA — `/settings` секция
+«Расписание»: список, пауза до даты, возобновить, удалить, ссылка на
+сессию. Внешних уведомлений (TG DM, push) нет.
+
 ## Приглашения и пересылка (инструменты агента)
 
 `invite_member` («Позови Тихона») — добавляет пользователя в текущую сессию

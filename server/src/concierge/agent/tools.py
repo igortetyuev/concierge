@@ -665,20 +665,34 @@ async def forward_messages(
     }
 
 
+def _schedule_tools() -> list[Callable[..., Any]]:
+    from concierge.schedule import tools as schedule_tools
+
+    return [
+        schedule_tools.schedule_task,
+        schedule_tools.list_scheduled_tasks,
+        schedule_tools.pause_scheduled_task,
+        schedule_tools.resume_scheduled_task,
+        schedule_tools.cancel_scheduled_task,
+    ]
+
+
+_CORE_TOOL_LIST: list[Callable[..., Any]] = [
+    search_messages,
+    current_datetime,
+    remember,
+    recall,
+    forget,
+    create_document,
+    delegate_coding_task,
+    fetch_url,
+    invite_member,
+    forward_messages,
+    *_schedule_tools(),
+]
+
 CORE_TOOLS: dict[str, Callable[..., Any]] = {
-    f.__name__: f
-    for f in (
-        search_messages,
-        current_datetime,
-        remember,
-        recall,
-        forget,
-        create_document,
-        delegate_coding_task,
-        fetch_url,
-        invite_member,
-        forward_messages,
-    )
+    f.__name__: f for f in _CORE_TOOL_LIST
 }
 
 # Names that gate pydantic-ai capabilities rather than plain function tools;

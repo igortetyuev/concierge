@@ -417,7 +417,17 @@ export default function ChatView({ convId }: { convId: number }) {
               <IconCheck size={13} />
             </span>
           )
-          if (m.author_kind === 'system') {
+          const sched = m.parts.find(
+            (p) => p.type === 'text' && typeof p.scheduled === 'object' && p.scheduled !== null,
+          )?.scheduled as { kind?: string; title?: string } | undefined
+          if (m.author_kind === 'system' || sched) {
+            const parts = sched
+              ? m.parts.map((p) =>
+                  p.type === 'text'
+                    ? { ...p, text: `⏰ «${sched.title || 'по расписанию'}»: ${p.text ?? ''}` }
+                    : p,
+                )
+              : m.parts
             return (
               <div key={m.id}>
                 {showDay && <div className="msg-day">{dayLabel(m.created_at)}</div>}
@@ -432,7 +442,7 @@ export default function ChatView({ convId }: { convId: number }) {
                     {check}
                     <span className="sys-note muted">
                       <MessageParts
-                        parts={m.parts}
+                        parts={parts}
                         convId={convId}
                         origin={conv?.origin}
                         mentions={mentionNames}

@@ -77,9 +77,11 @@ class AgentRuntime:
         self._locks: dict[int, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def schedule(self, conversation_id: int, trigger_message_id: int) -> None:
+    def schedule(
+        self, conversation_id: int, trigger_message_id: int, wait: bool = False
+    ) -> None:
         task = asyncio.create_task(
-            self.maybe_run(conversation_id, trigger_message_id)
+            self.maybe_run(conversation_id, trigger_message_id, wait=wait)
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -90,10 +92,10 @@ class AgentRuntime:
             await asyncio.gather(*self._tasks)
 
     async def maybe_run(
-        self, conversation_id: int, trigger_message_id: int
+        self, conversation_id: int, trigger_message_id: int, wait: bool = False
     ) -> None:
         lock = self._locks.setdefault(conversation_id, asyncio.Lock())
-        if lock.locked():
+        if lock.locked() and not wait:
             return  # one run per conversation at a time
         async with lock:
             try:
@@ -111,8 +113,12 @@ class AgentRuntime:
             user = await session.get(User, trigger.author_id)
             if user is None or conv.status != "active":
                 return
-            if conv.reply_mode == "mention" and not prompt.is_mentioned(
-                trigger.parts, await prompt.mentions(session, user)
+            if (
+                conv.reply_mode == "mention"
+                and not _is_scheduled(trigger.parts)
+                and not prompt.is_mentioned(
+                    trigger.parts, await prompt.mentions(session, user)
+                )
             ):
                 return
 
@@ -580,7 +586,22 @@ class AgentRuntime:
         for p in parts:
             ptype = p.get("type")
             if ptype == "text":
-                chunks.append(str(p.get("text", "")))
+                sched = p.get("scheduled")
+                if isinstance(sched, dict):
+                    jid = sched.get("job_id")
+                    stitle = str(sched.get("title") or "")
+                    if sched.get("kind") == "reminder":
+                        chunks.append(
+                            f"[Сработало напоминание #{jid} «{stitle}»] "
+                            f"Напомни пользователю: {p.get('text', '')}"
+                        )
+                    else:
+                        chunks.append(
+                            f"[Событие по расписанию #{jid} «{stitle}»] "
+                            f"{p.get('text', '')}"
+                        )
+                else:
+                    chunks.append(str(p.get("text", "")))
                 if speaker_label is None:
                     sp = p.get("speaker")
                     if isinstance(sp, dict):
@@ -738,6 +759,15 @@ class AgentRuntime:
                     {"conversation": {"id": conversation_id, "title": new_title}},
                 )
             )
+
+
+def _is_scheduled(parts: list[dict[str, Any]]) -> bool:
+    """A scheduler trigger message (fired event/reminder) counts as a mention
+    so it wakes a reply_mode='mention' session too."""
+    return any(
+        p.get("type") == "text" and isinstance(p.get("scheduled"), dict)
+        for p in parts
+    )
 
 
 def _message_dict(m: Message) -> dict[str, Any]:

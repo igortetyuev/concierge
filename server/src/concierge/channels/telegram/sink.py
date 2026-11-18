@@ -152,8 +152,10 @@ class TelegramSink:
     # ---------- message.created ----------
 
     async def _message_created(self, message: dict[str, Any]) -> None:
-        if message.get("source_channel") == "telegram":
-            return  # anti-echo: our own inbound is already in the chat
+        # anti-echo: our own inbound is already in the chat; scheduler
+        # triggers are shown to nobody — only the agent's reply goes out.
+        if message.get("source_channel") in ("telegram", "schedule"):
+            return
         kind = message.get("author_kind")
         if kind == "assistant":
             await self._assistant_message(message)

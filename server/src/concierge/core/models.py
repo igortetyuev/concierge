@@ -22,6 +22,7 @@ from concierge.conversations.models import (
 from concierge.core.audit import AuditEvent
 from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
+from concierge.schedule.models import ScheduledJob
 from concierge.settings.models import Setting, SettingScope
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "ModelProvider",
     "Role",
     "Run",
+    "ScheduledJob",
     "Setting",
     "SettingScope",
     "TelegramBinding",

@@ -1963,3 +1963,14 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.schedule-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line, #3333);
+}
+.schedule-item:last-child {
+  border-bottom: none;
+}
+.schedule-item .settings-row input[type='datetime-local'] {
+  max-width: 210px;
+}
