@@ -154,10 +154,13 @@ firewall-правило 8100.
 с его ролью/правами. Снимок в партах при этом не слепок: PATCH
 (label/маппинг), merge и перенос сэмпла переписывают `speaker` в
 сохранённых `messages.parts` и `attachments.derived`
-(`speaker.relabel_speaker`), а аутентификация и асинхронный пайплайн
-ретаргетят `author_id` уже опубликованных сообщений
-(`speaker.authenticate_attachment`); затронутым сессиям шлётся
-`messages.invalidate` — открытый чат перечитывает хвост (`resyncTail`).
+(`speaker.relabel_speaker`), а аутентификация, асинхронный пайплайн и
+перенос сэмпла в аутентифицированный голос ретаргетят `author_id` уже
+опубликованных сообщений (`speaker.authenticate_attachment` — матчит
+оба ключа партов, `attachment_id` и `voice_attachment_id`); затронутым
+сессиям шлётся `messages.invalidate` — открытый чат перечитывает хвост
+(`resyncTail`). Удаление голоса снимает `speaker`-слепки с его
+аттачментов и сообщений (`speaker.clear_speaker`).
 Снятие галочки историю не откатывает. В PWA — chip на сообщении;
 `/admin` → «Голоса»: редакт. label, маппинг, галочка аутентификации,
 прослушивание образца, merge голосов, управление сэмплами
