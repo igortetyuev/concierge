@@ -261,7 +261,9 @@ async def relabel_speaker(
     ).scalars()
     for msg in msgs:
         hit = attachment_ids is not None and any(
-            p.get("attachment_id") in attachment_ids for p in msg.parts
+            p.get("attachment_id") in attachment_ids
+            or p.get("voice_attachment_id") in attachment_ids
+            for p in msg.parts
         )
         changed = False
         parts = []
@@ -310,18 +312,22 @@ async def authenticate_attachment(
     if owner is None:
         return set()
     conv_ids: set[int] = set()
+    # Loose prefilter (matches both `attachment_id` and `voice_attachment_id`,
+    # plus id prefixes) — the per-part check below verifies exactly.
     msgs = (
         await session.execute(
             select(Message).where(
                 cast(Message.parts, String).like(
-                    f'%"attachment_id": {att.id}%'
+                    f'%attachment_id": {att.id}%'
                 )
             )
         )
     ).scalars()
     for msg in msgs:
         if msg.author_id != owner.id and any(
-            p.get("attachment_id") == att.id for p in msg.parts
+            p.get("attachment_id") == att.id
+            or p.get("voice_attachment_id") == att.id
+            for p in msg.parts
         ):
             msg.author_id = owner.id
             conv_ids.add(msg.conversation_id)
@@ -347,6 +353,52 @@ async def authenticate_voice(session: AsyncSession, voice: Voice) -> set[int]:
         sp = att.derived.get("speaker")
         if isinstance(sp, dict) and sp.get("voice_id") == voice.id:
             conv_ids |= await authenticate_attachment(session, att)
+    return conv_ids
+
+
+async def clear_speaker(session: AsyncSession, voice_id: int) -> set[int]:
+    """Drop stored `speaker` snapshots pointing at a voice being deleted —
+    from `attachments.derived` and from message parts. Returns
+    conversation_ids to refresh."""
+    # Lazy: conversations imports the media service at module load.
+    from concierge.conversations.models import Message
+
+    conv_ids: set[int] = set()
+    atts = (
+        await session.execute(
+            select(Attachment).where(
+                cast(Attachment.derived, String).like(
+                    f'%"voice_id": {voice_id}%'
+                )
+            )
+        )
+    ).scalars()
+    for att in atts:
+        sp = att.derived.get("speaker")
+        if isinstance(sp, dict) and sp.get("voice_id") == voice_id:
+            att.derived = {
+                k: v for k, v in att.derived.items() if k != "speaker"
+            }
+
+    msgs = (
+        await session.execute(
+            select(Message).where(
+                cast(Message.parts, String).like('%"speaker"%')
+            )
+        )
+    ).scalars()
+    for msg in msgs:
+        changed = False
+        parts = []
+        for part in msg.parts:
+            sp = part.get("speaker")
+            if isinstance(sp, dict) and sp.get("voice_id") == voice_id:
+                part = {k: v for k, v in part.items() if k != "speaker"}
+                changed = True
+            parts.append(part)
+        if changed:
+            msg.parts = parts
+            conv_ids.add(msg.conversation_id)
     return conv_ids
 
 

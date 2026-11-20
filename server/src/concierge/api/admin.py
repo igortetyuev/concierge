@@ -1473,8 +1473,11 @@ async def delete_voice(
     await session.execute(
         delete(VoiceSample).where(VoiceSample.voice_id == voice_id)
     )
+    conv_ids = await speaker_service.clear_speaker(session, voice_id)
     await session.delete(voice)
     await session.commit()
+    if conv_ids:
+        await _invalidate_convs(conv_ids)
     return {"ok": True}
 
 
@@ -1557,6 +1560,7 @@ async def add_voice_sample(
     conv_ids = await speaker_service.relabel_speaker(
         session, voice, attachment_ids={att.id}
     )
+    conv_ids |= await speaker_service.authenticate_attachment(session, att)
     audit.record(
         session,
         "admin.voice.sample.add",

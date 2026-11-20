@@ -260,6 +260,160 @@ async def test_voice_relabel_rewrites_stored_speaker(
         assert a.derived["speaker"]["voice_id"] == v2
 
 
+async def _voice_text_message(
+    owner_id: int, att_id: int, author_id: int, speaker: dict | None = None
+) -> int:
+    """A message like the voice-message endpoint posts: a single text part
+    keyed by `voice_attachment_id` (no `attachment_id` part)."""
+    async with db.get_sessionmaker()() as session:
+        conv = Conversation(kind="group", title="Гостиная", owner_id=owner_id)
+        session.add(conv)
+        await session.flush()
+        part: dict = {
+            "type": "text",
+            "text": "привет",
+            "transcribed": True,
+            "voice_attachment_id": att_id,
+        }
+        if speaker is not None:
+            part["speaker"] = speaker
+        msg = Message(
+            conversation_id=conv.id,
+            seq=1,
+            author_kind="user",
+            author_id=author_id,
+            parts=[part],
+        )
+        session.add(msg)
+        await session.commit()
+        return int(msg.id)
+
+
+async def test_voice_authenticate_covers_voice_attachment_id(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """voice_attachment_id parts (PWA/esp32 voice flow) must retarget too —
+    there is no `attachment_id` part to match."""
+    await make_user("admin", "admin")
+    device = await make_user("wall", "adult")
+    owner = await make_user("mom", "adult")
+    token = await login(client, "admin")
+    v1 = await _voice("Голос 1")
+    att = await _attachment(device.id, "va1")
+    msg_id = await _voice_text_message(
+        owner.id,
+        att,
+        author_id=device.id,
+        speaker={"voice_id": v1, "user_id": None, "name": "Голос 1"},
+    )
+    async with db.get_sessionmaker()() as session:
+        a = await session.get(Attachment, att)
+        assert a is not None
+        a.derived = {
+            "status": "done",
+            "speaker": {"voice_id": v1, "user_id": None, "name": "Голос 1"},
+        }
+        await session.commit()
+
+    patched = await client.patch(
+        f"/admin/voices/{v1}",
+        json={"user_id": owner.id, "authenticated": True},
+        headers=auth(token),
+    )
+    assert patched.status_code == 200, patched.text
+    async with db.get_sessionmaker()() as session:
+        msg = await session.get(Message, msg_id)
+        assert msg is not None
+        assert msg.author_id == owner.id
+        assert msg.parts[0]["speaker"]["name"] == owner.display_name
+
+
+async def test_moved_sample_into_authenticated_voice(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """Dragging a sample onto an authenticated voice relabels the snapshot
+    and retargets the message author to the voice's owner."""
+    await make_user("admin", "admin")
+    device = await make_user("wall", "adult")
+    owner = await make_user("mom", "adult")
+    token = await login(client, "admin")
+    v_other = await _voice("Голос 1")
+    v_auth = await _voice("Голос 2")
+    att = await _attachment(device.id, "mv1")
+    await _sample(v_other, att, [1.0, 0.0])
+    msg_id = await _voice_text_message(
+        owner.id,
+        att,
+        author_id=device.id,
+        speaker={"voice_id": v_other, "user_id": None, "name": "Голос 1"},
+    )
+    async with db.get_sessionmaker()() as session:
+        a = await session.get(Attachment, att)
+        assert a is not None
+        a.derived = {
+            "status": "done",
+            "speaker": {"voice_id": v_other, "user_id": None, "name": "Голос 1"},
+        }
+        voice = await session.get(Voice, v_auth)
+        assert voice is not None
+        voice.user_id = owner.id
+        voice.authenticated = True
+        await session.commit()
+
+    moved = await client.post(
+        f"/admin/voices/{v_auth}/samples",
+        json={"attachment_id": att},
+        headers=auth(token),
+    )
+    assert moved.status_code == 201, moved.text
+    async with db.get_sessionmaker()() as session:
+        msg = await session.get(Message, msg_id)
+        assert msg is not None
+        assert msg.author_id == owner.id
+        sp = msg.parts[0]["speaker"]
+        assert sp["voice_id"] == v_auth
+        assert sp["user_id"] == owner.id
+        a = await session.get(Attachment, att)
+        assert a is not None
+        assert a.derived["speaker"]["voice_id"] == v_auth
+
+
+async def test_delete_voice_clears_speaker_snapshots(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """Deleting a voice drops dangling `speaker` refs — no chips pointing
+    at a voice that no longer exists."""
+    await make_user("admin", "admin")
+    user = await make_user("mom", "adult")
+    token = await login(client, "admin")
+    v1 = await _voice("Голос 1")
+    att = await _attachment(user.id, "dv1")
+    msg_id = await _voice_text_message(
+        user.id,
+        att,
+        author_id=user.id,
+        speaker={"voice_id": v1, "user_id": None, "name": "Голос 1"},
+    )
+    async with db.get_sessionmaker()() as session:
+        a = await session.get(Attachment, att)
+        assert a is not None
+        a.derived = {
+            "status": "done",
+            "speaker": {"voice_id": v1, "user_id": None, "name": "Голос 1"},
+        }
+        await session.commit()
+
+    deleted = await client.delete(f"/admin/voices/{v1}", headers=auth(token))
+    assert deleted.status_code == 200, deleted.text
+    async with db.get_sessionmaker()() as session:
+        msg = await session.get(Message, msg_id)
+        assert msg is not None
+        assert "speaker" not in msg.parts[0]
+        a = await session.get(Attachment, att)
+        assert a is not None
+        assert "speaker" not in a.derived
+
+
 async def test_voice_authenticate_retargets_author(
     engine, client: httpx.AsyncClient
 ) -> None:
