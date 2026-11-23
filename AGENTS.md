@@ -134,13 +134,17 @@ RAM на ru-модель). Автозапуск — задача `Concierge-Koko
 Провайдер `kokoro-lan` (kind `openai-compatible`, base_url
 `http://<win-host>:8200/v1`), binding `tts` → model `kokoro`.
 
-Важно (2026-11-23): базовый Python `AppData\Local\Programs\Python\Python312`
-был обрублен — пропали `Lib/` и часть `DLLs/`, venv'ы не стартовали
-(«No module named 'encodings'»); восстановлен из NuGet-пакета
-`python` 3.12.10 (`tools\Lib|DLLs|include|libs|Scripts` скопированы
-поверх; распаковка в `C:\Users\igor\py312-nuget`). Все venv'ы снова
-рабочие — после перезагрузки сервисы поднимутся. Если `Lib` снова
-исчезнет — повторить копирование оттуда же.
+Важно (2026-11-23): что-то потёрло деревья в `AppData\Local\Programs` —
+у `Python312` пропали `Lib/` и часть `DLLs/` (venv'ы не стартовали,
+«No module named 'encodings'»), у `Ollama` — весь `lib/` с
+`llama-server.exe` (embeddings/vision → 500, сам `ollama.exe` отвечал).
+Восстановлено: Python — из NuGet-пакета `python` 3.12.10 (распаковка
+оставлена в `C:\Users\igor\py312-nuget`), Ollama — полной перезаливкой
+`ollama-windows-amd64.zip` релиза 0.34.3 поверх install-дира с
+перезапуском задачи `Concierge-Ollama` (модели в `~/.ollama` не
+тронуты). Все venv'ы и сервисы снова рабочие — после перезагрузки
+поднимутся. Если `Lib`/`lib` снова исчезнут — искать, что их трёт
+(антивирус/«клинер»?).
 
 TTS-ответы: автоголос (`voice_quick` PWA, `voice_session` «Гостиная»,
 Telegram `voice_reply`) озвучивает `tts.spoken_version` — текст чистится
