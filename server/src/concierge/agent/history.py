@@ -205,7 +205,11 @@ def deserialize_parts(parts: list[dict[str, Any]]) -> list[ModelMessage]:
             ptype not in ("tool", "compaction")
             and p.get("attachment_id") is not None
         ):
-            label = p.get("name") or ptype or "attachment"
+            label = (
+                "голосовой ответ"
+                if p.get("tts")
+                else p.get("name") or ptype or "attachment"
+            )
             response_part = TextPart(f"[{label}]")
         if response_part is not None:
             close_req()

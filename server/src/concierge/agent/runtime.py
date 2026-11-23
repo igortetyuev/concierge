@@ -622,7 +622,11 @@ class AgentRuntime:
                     sp = att.derived.get("speaker")
                     if isinstance(sp, dict):
                         speaker_label = str(sp.get("name") or "") or None
-                label = att.original_name or ptype or "attachment"
+                label = (
+                    "голосовой ответ"
+                    if p.get("tts")
+                    else att.original_name or ptype or "attachment"
+                )
                 text = media_service.media_prompt_text(att, str(ptype))
                 if ptype in ("audio", "video"):
                     chunks.append(text or f"[{label}]")

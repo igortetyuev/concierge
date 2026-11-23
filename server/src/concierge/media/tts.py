@@ -106,12 +106,19 @@ _URL_RE = re.compile(r"https?://\S+")
 _MD_LINE_RE = re.compile(r"(?m)^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)])\s+")
 _MD_MARKS_RE = re.compile(r"(\*\*|__|~~)(.*?)\1|(\*|_)(.*?)\3")
 _WS_RE = re.compile(r"\s+")
+# Маркеры-вложения вида [reply.wav], которые модель иногда копирует из
+# сериализованной истории ([label] для аудио-партов) — вслух не читаем.
+_ATT_MARKER_RE = re.compile(
+    r"\[[^\]\n]{0,80}\.(?:wav|mp3|ogg|m4a|opus|flac|aac|webm|mp4|mov|png|jpe?g|pdf)\]",
+    re.IGNORECASE,
+)
 
 
 def speechify(text: str) -> str:
     """Markdown-ish text -> plain spoken text (no code, links or markup)."""
     text = _FENCED_RE.sub(" ", text)
     text = _IMG_RE.sub(" ", text)
+    text = _ATT_MARKER_RE.sub(" ", text)
     text = _LINK_RE.sub(r"\1", text)
     text = _URL_RE.sub(" ", text)
     text = _MD_LINE_RE.sub("", text)

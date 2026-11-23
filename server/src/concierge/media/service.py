@@ -220,7 +220,9 @@ def media_prompt_text(att: Attachment, part_type: str) -> str:
     caption = str(att.derived.get("caption") or "").strip()
     text = str(att.derived.get("text") or "").strip()
     if part_type == "audio":
-        return transcript or caption
+        return transcript or caption or str(
+            att.derived.get("spoken") or ""
+        ).strip()
     if part_type == "video":
         return "\n".join(x for x in (transcript, caption) if x)
     return text or caption

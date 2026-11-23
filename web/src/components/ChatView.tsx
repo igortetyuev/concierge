@@ -420,6 +420,18 @@ export default function ChatView({ convId }: { convId: number }) {
           const sched = m.parts.find(
             (p) => p.type === 'text' && typeof p.scheduled === 'object' && p.scheduled !== null,
           )?.scheduled as { kind?: string; title?: string } | undefined
+          // A tts reply already sounded on the speaker / in Telegram — no
+          // bubble in chat. Keep a hidden player only for the live autoplay.
+          const ttsOnly = m.parts.length > 0 && m.parts.every((p) => p.tts === true)
+          if (ttsOnly) {
+            return (
+              <div key={m.id} hidden>
+                {conv?.origin === 'voice_quick' && m.id === ttsAutoplayId && (
+                  <MessageParts parts={m.parts} convId={convId} autoplayTts />
+                )}
+              </div>
+            )
+          }
           if (m.author_kind === 'system' || sched) {
             const parts = sched
               ? m.parts.map((p) =>
@@ -478,7 +490,9 @@ export default function ChatView({ convId }: { convId: number }) {
                       parts={m.parts}
                       convId={convId}
                       origin={conv?.origin}
-                      autoplayTts={m.id === ttsAutoplayId}
+                      autoplayTts={
+                        conv?.origin === 'voice_quick' && m.id === ttsAutoplayId
+                      }
                       mentions={mentionNames}
                     />
                     <span className="msg-meta">
