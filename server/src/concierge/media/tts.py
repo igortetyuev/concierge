@@ -106,12 +106,23 @@ _URL_RE = re.compile(r"https?://\S+")
 _MD_LINE_RE = re.compile(r"(?m)^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)])\s+")
 _MD_MARKS_RE = re.compile(r"(\*\*|__|~~)(.*?)\1|(\*|_)(.*?)\3")
 _WS_RE = re.compile(r"\s+")
-# Маркеры-вложения вида [reply.wav], которые модель иногда копирует из
-# сериализованной истории ([label] для аудио-партов) — вслух не читаем.
+# Маркеры-вложения вида [reply.wav] / [голосовой ответ], которые модель
+# иногда копирует из сериализованной истории ([label] для аудио-партов).
 _ATT_MARKER_RE = re.compile(
-    r"\[[^\]\n]{0,80}\.(?:wav|mp3|ogg|m4a|opus|flac|aac|webm|mp4|mov|png|jpe?g|pdf)\]",
+    r"\[(?:голосовой ответ[^\]\n]*|[^\]\n]{0,80}\."
+    r"(?:wav|mp3|ogg|m4a|opus|flac|aac|webm|mp4|mov|png|jpe?g|pdf))\]",
     re.IGNORECASE,
 )
+_BLANKS_RE = re.compile(r"\n{3,}")
+
+
+def sanitize_reply_text(text: str) -> str:
+    """Убрать эхо маркеров-вложений из текста ответа ассистента."""
+    if not _ATT_MARKER_RE.search(text):
+        return text
+    text = _ATT_MARKER_RE.sub("", text)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _BLANKS_RE.sub("\n\n", text).strip()
 
 
 def speechify(text: str) -> str:

@@ -47,6 +47,18 @@ def test_speechify() -> None:
     assert "кодом" in out
 
 
+def test_attachment_markers_stripped() -> None:
+    """Модель иногда повторяет метки вложений из истории — чистим везде."""
+    src = "Завтра шесть уроков, освободится к 13:55. [голосовой ответ]"
+    assert tts.sanitize_reply_text(src) == (
+        "Завтра шесть уроков, освободится к 13:55."
+    )
+    assert tts.speechify(src) == "Завтра шесть уроков, освободится к 13:55."
+    assert tts.speechify("Готово. [reply.wav]") == "Готово."
+    multi = "Текст.\n\n[reply.wav]\n\nещё текст."  # noqa: RUF001
+    assert tts.sanitize_reply_text(multi) == "Текст.\n\nещё текст."  # noqa: RUF001
+
+
 async def test_spoken_version_short(engine, client: httpx.AsyncClient) -> None:
     """Short replies pass through without a chat_fast call."""
     await make_user("sv", "adult")

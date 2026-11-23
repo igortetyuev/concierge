@@ -13,6 +13,7 @@ from concierge.conversations.models import (
     Run,
 )
 from concierge.core.db import utcnow
+from concierge.media import tts as media_tts
 from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
 
@@ -465,6 +466,14 @@ async def post_assistant_message(
     author_kind: str = "assistant",
 ) -> Message:
     """Append an assistant/system message produced by the server."""
+    parts = [
+        (
+            {**p, "text": media_tts.sanitize_reply_text(str(p["text"]))}
+            if p.get("type") == "text" and p.get("text")
+            else p
+        )
+        for p in parts
+    ]
     await session.execute(
         select(Conversation.id)
         .where(Conversation.id == conv.id)
