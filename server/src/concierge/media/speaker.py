@@ -1,5 +1,12 @@
 """Speaker-ID through the `speaker` capability binding.
 
+Only uploads where the account alone doesn't identify the speaker are
+embedded: shared devices (role permission `speaker_id`, e.g. the esp32
+«Колонка» account) and audio that arrived through telegram
+(`derived.origin == "telegram"` — the uploader is the bound account, the
+voice may be someone else's). Audio uploaded by a person's own account in
+the PWA is attributed to that account and gets no speaker data at all.
+
 Provider kinds: `test` (binding.params["embedding"] — canned vector for
 tests) and `speaker-http` (POST {base}/embed, multipart wav →
 {"embedding": [...]} — the speakerid sidecar). Errors degrade to a
@@ -36,17 +43,34 @@ _LEARN_THRESHOLD = 0.60
 MIN_DURATION_S = 1.0
 
 
+def speaker_id_allowed(user: User, att: Attachment | None) -> bool:
+    """Whether this upload goes through speaker-ID: shared-device accounts
+    (`speaker_id` permission) always; person accounts only for audio that
+    came through telegram."""
+    return bool(
+        user.role.permissions.get("speaker_id")
+        or (att is not None and (att.derived or {}).get("origin") == "telegram")
+    )
+
+
 async def embed_audio(
-    session: AsyncSession, user: User, wav_path: Path
+    session: AsyncSession,
+    user: User,
+    wav_path: Path,
+    att: Attachment | None = None,
 ) -> tuple[list[float] | None, dict[str, Any]]:
     """Embedding of a normalized wav + the binding's params (thresholds).
 
-    (None, params) when the capability is unbound or the provider call
+    (None, params) when the capability is unbound, speaker-ID isn't
+    allowed for this upload (`speaker_id_allowed`), or the provider call
     fails — caller just skips speaker data.
     """
     # Lazy: concierge.agent imports the media pipeline at module load.
     from concierge.agent.providers import http_base_url, provider_api_key
     from concierge.agent.service import get_capability_binding
+
+    if not speaker_id_allowed(user, att):
+        return None, {}
 
     binding = await get_capability_binding(session, "speaker", user.role_id)
     if binding is None:
@@ -76,17 +100,22 @@ async def embed_audio(
 
 
 async def embed_attachment(
-    session: AsyncSession, user: User, att: Attachment
+    session: AsyncSession, att: Attachment
 ) -> tuple[list[float] | None, dict[str, Any]]:
     """Embedding for a stored attachment: blob → 16kHz wav → provider.
 
     Used by the admin sample-add endpoint and the backfill CLI — callers
-    that re-embed existing audio outside the pipeline.
+    that re-embed existing audio outside the pipeline. Eligibility is
+    checked on the attachment's uploader (`speaker_id_allowed`), not the
+    caller.
     """
     # Lazy: pipeline imports this module at load time.
     from concierge.media import service
     from concierge.media.pipeline import _stage, _to_wav
 
+    user = await session.get(User, att.uploaded_by)
+    if user is None:
+        return None, {}
     data = service.read_blob(att.sha256)
     with tempfile.TemporaryDirectory() as tmp:
         src = _stage(data, tmp, att.original_name)
@@ -95,7 +124,7 @@ async def embed_attachment(
         except Exception:
             log.warning("speaker: wav conversion failed attachment=%s", att.id)
             return None, {}
-        return await embed_audio(session, user, wav)
+        return await embed_audio(session, user, wav, att)
 
 
 async def _embed_http(

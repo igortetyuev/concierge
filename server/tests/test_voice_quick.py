@@ -46,7 +46,7 @@ async def test_voice_quick_speaker_parts(
     await _add_provider("chat", {"custom_output_text": "ок"})
     await _add_provider("chat_fast", {"custom_output_text": "Сантехник"})
     await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
-    await make_user("vqs", "adult")
+    await make_user("vqs", "speaker")
     token = await login(client, "vqs")
     with tempfile.TemporaryDirectory() as tmp:
         blob = _sine(Path(tmp) / "v.m4a", ["-c:a", "aac"], seconds=2)

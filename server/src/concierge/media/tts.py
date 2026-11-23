@@ -39,11 +39,23 @@ async def synthesize_speech(
     api_key = await provider_api_key(session, user, provider)
     if kind in ("openai", "openai-compatible"):
         voice = str(binding.params.get("voice") or "alloy")
+        fmt = str(binding.params.get("response_format") or "wav")
         return await _openai_speech(
-            http_base_url(provider), binding.model, voice, api_key, text
+            http_base_url(provider), binding.model, voice, api_key,
+            text, fmt,
         )
     log.warning("tts: provider kind %r unsupported", kind)
     return None
+
+
+_MIME_BY_FORMAT = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "pcm": "audio/L16",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+}
 
 
 async def _openai_speech(
@@ -52,6 +64,7 @@ async def _openai_speech(
     voice: str,
     api_key: str | None,
     text: str,
+    fmt: str,
 ) -> tuple[bytes, str]:
     base = (base_url or "https://api.openai.com/v1").rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -62,12 +75,12 @@ async def _openai_speech(
                 "model": model,
                 "input": text,
                 "voice": voice,
-                "response_format": "mp3",
+                "response_format": fmt,
             },
             headers=headers,
         )
         resp.raise_for_status()
-        return resp.content, "audio/mpeg"
+        return resp.content, _MIME_BY_FORMAT.get(fmt, f"audio/{fmt}")
 
 
 def _test_wav() -> bytes:

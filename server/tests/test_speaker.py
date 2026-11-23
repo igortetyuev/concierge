@@ -67,14 +67,32 @@ async def _assign(att_id: int, vec: list[float], params: dict) -> dict:
 
 
 async def test_no_binding(engine) -> None:
-    user = await make_user("spk0", "adult")
+    user = await make_user("spk0", "speaker")
     async with db.get_sessionmaker()() as session:
         vec, params = await speaker.embed_audio(session, user, Path("x.wav"))
     assert vec is None and params == {}
 
 
+async def test_telegram_origin_person_gets_embedding(engine) -> None:
+    """A person account normally skips speaker-ID — unless the audio came
+    through telegram (uploader is the bound account, voice may differ)."""
+    user = await make_user("tguser", "adult")
+    await _speaker_provider([1.0, 0.0, 0.0])
+    att_id = await _attachment(user.id, "tg1")
+    async with db.get_sessionmaker()() as session:
+        att = await session.get(Attachment, att_id)
+        assert att is not None
+        # PWA-origin clip: skipped.
+        vec, _ = await speaker.embed_audio(session, user, Path("x.wav"), att)
+        assert vec is None
+        # Same clip arriving via telegram: embedded.
+        att.derived = {"status": "pending", "origin": "telegram"}
+        vec, _ = await speaker.embed_audio(session, user, Path("x.wav"), att)
+    assert vec == [1.0, 0.0, 0.0]
+
+
 async def test_first_embedding_creates_voice(engine) -> None:
-    user = await make_user("spk1", "adult")
+    user = await make_user("spk1", "speaker")
     await _speaker_provider([1.0, 0.0, 0.0])
     att_id = await _attachment(user.id, "s1")
     vec, params = await _embed(user)
@@ -92,7 +110,7 @@ async def test_first_embedding_creates_voice(engine) -> None:
 
 
 async def test_close_embedding_joins_and_learns(engine) -> None:
-    user = await make_user("spk2", "adult")
+    user = await make_user("spk2", "speaker")
     await _speaker_provider([1.0, 0.0, 0.0])
     att1 = await _attachment(user.id, "s2a")
     att2 = await _attachment(user.id, "s2b")
@@ -109,7 +127,7 @@ async def test_close_embedding_joins_and_learns(engine) -> None:
 
 
 async def test_far_embedding_creates_second_voice(engine) -> None:
-    user = await make_user("spk3", "adult")
+    user = await make_user("spk3", "speaker")
     await _speaker_provider([1.0, 0.0, 0.0])
     att1 = await _attachment(user.id, "s3a")
     att2 = await _attachment(user.id, "s3b")
@@ -121,7 +139,7 @@ async def test_far_embedding_creates_second_voice(engine) -> None:
 
 
 async def test_retranscribe_upserts_sample(engine) -> None:
-    user = await make_user("spk4", "adult")
+    user = await make_user("spk4", "speaker")
     await _speaker_provider([1.0, 0.0, 0.0])
     att_id = await _attachment(user.id, "s4")
     _, params = await _embed(user)
@@ -150,7 +168,7 @@ async def _wait_done(att_id: int) -> Attachment:
 async def test_pipeline_assigns_speaker(engine, client: httpx.AsyncClient) -> None:
     await _provider("stt", {"transcript": "привет"})
     await _speaker_provider([1.0, 0.0, 0.0])
-    await make_user("pipe", "adult")
+    await make_user("pipe", "speaker")
     token = await login(client, "pipe")
     with tempfile.TemporaryDirectory() as tmp:
         blob = _sine(Path(tmp) / "v.ogg", ["-c:a", "libopus"], seconds=2)
@@ -184,8 +202,36 @@ async def test_pipeline_without_binding(engine, client: httpx.AsyncClient) -> No
     assert "speaker" not in att.derived
 
 
+@needs_ffmpeg
+async def test_pipeline_skips_speaker_for_person(
+    engine, client: httpx.AsyncClient
+) -> None:
+    """speaker binding + a person account (no `speaker_id` permission):
+    the clip is attributed to the uploader, no voice/sample is created."""
+    await _provider("stt", {"transcript": "привет"})
+    await _speaker_provider([1.0, 0.0, 0.0])
+    await make_user("person", "adult")
+    token = await login(client, "person")
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = _sine(Path(tmp) / "v.ogg", ["-c:a", "libopus"], seconds=2)
+    resp = await client.post(
+        "/attachments",
+        files={"file": ("v.ogg", blob, "audio/ogg")},
+        headers=auth(token),
+    )
+    assert resp.status_code == 201, resp.text
+    att = await _wait_done(resp.json()["id"])
+    assert att.derived["status"] == "done", att.derived
+    assert "speaker" not in att.derived
+    async with db.get_sessionmaker()() as session:
+        assert (await session.execute(select(Voice))).scalars().all() == []
+        assert (
+            await session.execute(select(VoiceSample))
+        ).scalars().all() == []
+
+
 async def test_mapped_voice_uses_display_name(engine) -> None:
-    user = await make_user("spk5", "adult")
+    user = await make_user("spk5", "speaker")
     await _speaker_provider([1.0, 0.0, 0.0])
     att1 = await _attachment(user.id, "s5a")
     att2 = await _attachment(user.id, "s5b")

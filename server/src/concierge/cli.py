@@ -64,9 +64,9 @@ async def _backfill_speaker(limit: int | None, conversation_id: int | None) -> i
             if att is None or (att.derived or {}).get("speaker"):
                 continue
             user = await session.get(User, att.uploaded_by)
-            if user is None:
+            if user is None or not speaker.speaker_id_allowed(user, att):
                 continue
-            vec, params = await speaker.embed_attachment(session, user, att)
+            vec, params = await speaker.embed_attachment(session, att)
             if vec is None:
                 errors += 1
                 continue

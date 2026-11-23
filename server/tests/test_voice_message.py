@@ -97,7 +97,7 @@ async def test_voice_message_speaker_part(
     await _add_provider("stt", {"transcript": text})
     await _add_provider("chat", {"custom_output_text": "ок"})
     await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
-    await make_user("vs", "adult")
+    await make_user("vs", "speaker")
     token = await login(client, "vs")
     cid = await _conv(client, token)
     with tempfile.TemporaryDirectory() as tmp:
@@ -119,7 +119,7 @@ async def test_voice_message_authenticated_author(
     await _add_provider("stt", {"transcript": text})
     await _add_provider("chat", {"custom_output_text": "ок"})
     await _add_provider("speaker", {"embedding": [1.0, 0.0, 0.0]})
-    device = await make_user("wall", "adult")
+    device = await make_user("wall", "speaker")
     owner = await make_user("mom", "adult")
     token = await login(client, "wall")
     cid = await _conv(client, token)

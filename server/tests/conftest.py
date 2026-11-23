@@ -62,6 +62,21 @@ ROLE_SEEDS = {
         "telegram": False,
         "voice_quick_session": False,
     },
+    # Shared-device account (esp32 «Колонка»): its uploads go through
+    # speaker-ID — the account alone doesn't identify the speaker.
+    "speaker": {
+        "settings": {"user": "rw", "global": "rw"},
+        "manage_users": False,
+        "tools": {"allow": ["*"], "deny": []},
+        "mcp_servers": ["*"],
+        "capabilities_override": {},
+        "max_upload_mb": 100,
+        "code_agent": True,
+        "telegram": True,
+        "voice_quick_session": True,
+        "family_memory": True,
+        "speaker_id": True,
+    },
 }
 
 

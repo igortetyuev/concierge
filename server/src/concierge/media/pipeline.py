@@ -127,7 +127,7 @@ class MediaPipeline:
                 duration, transcript, (vec, params) = await asyncio.gather(
                     _duration(src),
                     stt.transcribe_audio(session, user, wav),
-                    _embed_safe(user, wav),
+                    _embed_safe(user, wav, att),
                 )
                 if transcript is None:
                     raise MediaSkippedError("no stt provider bound")
@@ -149,7 +149,7 @@ class MediaPipeline:
                 if track is not None:
                     t, (vec, params) = await asyncio.gather(
                         stt.transcribe_audio(session, user, track),
-                        _embed_safe(user, track),
+                        _embed_safe(user, track, att),
                     )
                     if t is None:
                         raise MediaSkippedError("no stt provider bound")
@@ -190,13 +190,13 @@ class MediaSkippedError(Exception):
 
 
 async def _embed_safe(
-    user: User, wav: Path
+    user: User, wav: Path, att: Attachment
 ) -> tuple[list[float] | None, dict[str, Any]]:
     """Speaker embedding on its own session (AsyncSession isn't concurrent-safe);
     failures degrade to no speaker data — they must never hurt the transcript."""
     try:
         async with get_sessionmaker()() as s:
-            return await speaker.embed_audio(s, user, wav)
+            return await speaker.embed_audio(s, user, wav, att)
     except Exception:
         log.warning("speaker: embed failed", exc_info=True)
         return None, {}

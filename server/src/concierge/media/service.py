@@ -109,8 +109,13 @@ async def create_attachment(
     mime: str,
     data: bytes,
     conversation_id: int | None,
+    origin: str | None = None,
 ) -> tuple[Attachment, bool]:
-    """Insert an attachment row; (sha256, uploader, conversation) dedups retries."""
+    """Insert an attachment row; (sha256, uploader, conversation) dedups retries.
+
+    `origin` ("telegram", ...) is kept in `derived` and survives pipeline
+    merges — speaker-ID uses it to keep processing channel-bound audio.
+    """
     sha = write_blob(data)
     existing = (
         await session.execute(
@@ -132,7 +137,10 @@ async def create_attachment(
         original_name=name[:512],
         uploaded_by=user.id,
         conversation_id=conversation_id,
-        derived={"status": "pending"},
+        derived={
+            "status": "pending",
+            **({"origin": origin} if origin else {}),
+        },
     )
     session.add(att)
     await session.commit()

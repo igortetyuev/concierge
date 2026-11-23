@@ -596,7 +596,8 @@ class TelegramService:
                 )
                 return None
             att, _ = await media_service.create_attachment(
-                session, user, media.name, media.mime, media.data, conv.id
+                session, user, media.name, media.mime, media.data, conv.id,
+                origin="telegram",
             )
             get_pipeline().schedule(att.id)
             media_part: dict[str, Any] = {

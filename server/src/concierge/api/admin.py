@@ -1538,7 +1538,7 @@ async def add_voice_sample(
             else 0.0
         )
     else:
-        vec, _ = await speaker_service.embed_attachment(session, admin, att)
+        vec, _ = await speaker_service.embed_attachment(session, att)
         if vec is None:
             raise HTTPException(422, "cannot compute embedding")
         sample = VoiceSample(

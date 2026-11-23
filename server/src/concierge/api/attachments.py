@@ -65,7 +65,14 @@ async def retranscribe_attachment(
         raise HTTPException(404, "attachment not found")
     if service.kind_of(att.mime, att.original_name) not in ("audio", "video"):
         raise HTTPException(400, "only audio/video can be transcribed")
-    att.derived = {"status": "pending"}
+    att.derived = {
+        "status": "pending",
+        **(
+            {"origin": o}
+            if (o := (att.derived or {}).get("origin"))
+            else {}
+        ),
+    }
     await session.commit()
     get_pipeline().schedule(att.id)
     return service.attachment_to_dict(att)
