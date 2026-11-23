@@ -72,6 +72,15 @@ async def system_prompt(
         ctx += ", участники: " + ", ".join(member_names)
     chunks.append(ctx)
 
+    if conv.origin == "voice_quick" or (conv.settings or {}).get(
+        "voice_session"
+    ):
+        chunks.append(
+            "[Голосовая сессия] Ответ будет озвучен — отвечай кратко и "
+            "разговорно. Если информации много, давай её полностью в тексте: "
+            "вслух прозвучит автоматически сжатая версия."
+        )
+
     now = local_now()
     off = now.strftime("%z")
     chunks.append(

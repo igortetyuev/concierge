@@ -30,6 +30,7 @@ from concierge.core import audit
 from concierge.core.ratelimit import client_ip
 from concierge.media import service as media_service
 from concierge.media import speaker as speaker_service
+from concierge.media import tts
 from concierge.media.models import Attachment
 from concierge.memory import indexer as memory_indexer
 from concierge.memory import store as memory_store
@@ -525,6 +526,46 @@ async def delete_message(
     except Exception:
         log.exception("message %s vector not deleted", message_id)
     return {"ok": True}
+
+
+class SpeakOut(BaseModel):
+    attachment_id: int
+    mime: str
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/speak")
+async def speak_message(
+    conversation_id: int,
+    message_id: int,
+    user: CurrentUser,
+    session: SessionDep,
+) -> SpeakOut:
+    """Synthesize a message's text parts to speech; returns the attachment
+    so the client (or the esp32 /play) can fetch it via /attachments/{id}."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    msg = await session.get(Message, message_id)
+    if msg is None or msg.conversation_id != conv.id:
+        raise HTTPException(404, "message not found")
+    text = tts.speechify(
+        "\n\n".join(
+            str(p.get("text", ""))
+            for p in msg.parts
+            if p.get("type") == "text"
+        )
+    )[: tts.TTS_TEXT_MAX]
+    if not text:
+        raise HTTPException(400, "message has no text to speak")
+    audio = await tts.synthesize_speech(session, user, text)
+    if audio is None:
+        raise HTTPException(503, "tts is not configured")
+    data, mime = audio
+    name = "speak.mp3" if mime == "audio/mpeg" else "speak.wav"
+    att, _ = await media_service.create_attachment(
+        session, user, name, mime, data, conv.id
+    )
+    att.derived = {"status": "done", "spoken": text}
+    await session.commit()
+    return SpeakOut(attachment_id=att.id, mime=mime)
 
 
 VOICE_QUICK_MIN_CHARS_DEFAULT = 2

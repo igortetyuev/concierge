@@ -211,6 +211,52 @@ async def test_provider_models_listing(
     assert resp.status_code == 422
 
 
+async def test_provider_voices_listing(
+    engine, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await make_user("admin", "admin")
+    token = await login(client, "admin")
+
+    p = await client.post(
+        "/admin/providers",
+        json={
+            "name": "kokoro",
+            "kind": "openai-compatible",
+            "base_url": "http://tts.lan:8200/v1",
+        },
+        headers=auth(token),
+    )
+    pid = p.json()["id"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/audio/voices"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "dima"},
+                    {"id": "sveta"},
+                    "af_heart",
+                    {"voice_id": "masha"},
+                    {},
+                ]
+            },
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **_: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    resp = await client.get(
+        f"/admin/providers/{pid}/voices", headers=auth(token)
+    )
+    assert resp.status_code == 200
+    assert resp.json() == ["af_heart", "dima", "masha", "sveta"]
+
+
 async def test_named_models_crud(engine, client: httpx.AsyncClient) -> None:
     await make_user("admin", "admin")
     token = await login(client, "admin")

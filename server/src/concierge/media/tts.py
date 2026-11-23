@@ -3,10 +3,15 @@
 Provider kinds: `test` (a short silent wav for tests),
 `openai`/`openai-compatible` (POST /audio/speech — OpenAI or compatible
 servers like openedai-speech / Kokoro-FastAPI).
+
+`spoken_version` turns an assistant reply into speech-ready text: markdown
+is stripped and overlong answers are compressed by the `chat_fast`
+capability, so the voice stays laconic while the full text stays in chat.
 """
 
 import io
 import logging
+import re
 import wave
 
 import httpx
@@ -17,6 +22,17 @@ from concierge.auth.models import User
 log = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+
+TTS_TEXT_MAX = 4000
+# Above this length the spoken version is compressed through chat_fast.
+SPEECH_SHORT_MAX = 600
+_SPEECH_INPUT_MAX = 8000
+
+_SPEECH_INSTRUCTIONS = (
+    "Сожми текст для озвучивания голосом до 1-2 коротких предложений: "
+    "сохрани суть, имена, числа и даты; без markdown, списков и ссылок. "
+    "Ответь только текстом для произнесения."
+)
 
 
 async def synthesize_speech(
@@ -81,6 +97,60 @@ async def _openai_speech(
         )
         resp.raise_for_status()
         return resp.content, _MIME_BY_FORMAT.get(fmt, f"audio/{fmt}")
+
+
+_FENCED_RE = re.compile(r"```.*?```|```.*\Z", re.DOTALL)
+_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_URL_RE = re.compile(r"https?://\S+")
+_MD_LINE_RE = re.compile(r"(?m)^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)])\s+")
+_MD_MARKS_RE = re.compile(r"(\*\*|__|~~)(.*?)\1|(\*|_)(.*?)\3")
+_WS_RE = re.compile(r"\s+")
+
+
+def speechify(text: str) -> str:
+    """Markdown-ish text -> plain spoken text (no code, links or markup)."""
+    text = _FENCED_RE.sub(" ", text)
+    text = _IMG_RE.sub(" ", text)
+    text = _LINK_RE.sub(r"\1", text)
+    text = _URL_RE.sub(" ", text)
+    text = _MD_LINE_RE.sub("", text)
+    text = _MD_MARKS_RE.sub(lambda m: m.group(2) or m.group(4) or "", text)
+    text = text.replace("`", "")
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _truncate_sentence(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    cut = max(text.rfind(p, 0, limit) for p in ".!?…")
+    return text[: cut + 1].strip() if cut > limit // 2 else text[:limit].strip()
+
+
+async def spoken_version(session: AsyncSession, user: User, text: str) -> str:
+    """Reply text -> speech-ready version: plain text, short when long."""
+    plain = speechify(text)
+    if len(plain) <= SPEECH_SHORT_MAX:
+        return plain
+    from concierge.agent import providers
+
+    bound = await providers.get_model(session, "chat_fast", user)
+    if bound is not None:
+        try:
+            from pydantic_ai import Agent
+
+            agent = Agent(
+                bound.model,
+                instructions=_SPEECH_INSTRUCTIONS,
+                model_settings=bound.settings,
+            )
+            result = await agent.run(plain[:_SPEECH_INPUT_MAX])
+            short = speechify(str(result.output))
+            if short:
+                return short[:TTS_TEXT_MAX]
+        except Exception:
+            log.exception("spoken_version compression failed")
+    return _truncate_sentence(plain, SPEECH_SHORT_MAX)
 
 
 def _test_wav() -> bytes:

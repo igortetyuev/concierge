@@ -36,7 +36,7 @@ import { $detailsOpen } from '../store/ui'
 import Composer from './Composer'
 import DetailsPanel from './DetailsPanel'
 import ForwardDialog from './ForwardDialog'
-import MessageParts, { CopyButton, ToolChip } from './MessageParts'
+import MessageParts, { CopyButton, SpeakButton, ToolChip } from './MessageParts'
 import Markdown from './Markdown'
 import {
   IconBack,
@@ -483,6 +483,10 @@ export default function ChatView({ convId }: { convId: number }) {
                     />
                     <span className="msg-meta">
                       {fmtTime(m.created_at)}
+                      {m.author_kind === 'assistant' &&
+                        m.parts.some((p) => p.type === 'text' && p.text) && (
+                          <SpeakButton convId={convId} messageId={m.id} />
+                        )}
                       {m.author_kind === 'assistant' && (
                         <CopyButton
                           text={m.parts

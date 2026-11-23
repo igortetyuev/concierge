@@ -204,11 +204,16 @@ export function BindingDialog({
   const [params, setParams] = useState(
     item && Object.keys(item.params).length ? JSON.stringify(item.params) : '',
   )
+  const [voice, setVoice] = useState(
+    typeof item?.params?.voice === 'string' ? item.params.voice : 'auto',
+  )
+  const [voiceOptions, setVoiceOptions] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     setModelOptions([])
+    setVoiceOptions([])
     if (!providerId) return
     const task =
       capability === 'stt'
@@ -223,6 +228,14 @@ export function BindingDialog({
         if (!cancelled) setModelOptions(ms)
       })
       .catch(() => {})
+    if (capability === 'tts') {
+      apiClient
+        .listProviderVoices(providerId)
+        .then((vs) => {
+          if (!cancelled) setVoiceOptions(vs)
+        })
+        .catch(() => {})
+    }
     return () => {
       cancelled = true
     }
@@ -239,6 +252,7 @@ export function BindingDialog({
         return
       }
     }
+    if (capability === 'tts' && voice) parsed.voice = voice
     setBusy(true)
     setError('')
     try {
@@ -322,6 +336,18 @@ export function BindingDialog({
           ))}
         </select>
       </label>
+      {capability === 'tts' && (
+        <label className="field">
+          <span>Голос</span>
+          <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+            {[...new Set([voice, 'auto', ...voiceOptions])].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="field">
         <span>Params (JSON)</span>
         <input

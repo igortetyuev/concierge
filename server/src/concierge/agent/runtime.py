@@ -3,6 +3,7 @@ import dataclasses
 import logging
 from typing import Any
 
+import httpx
 from pydantic_ai import Agent, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -49,7 +50,6 @@ log = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 100
 MEDIA_TEXT_MAX = 4000
-TTS_TEXT_MAX = 4000
 
 # Auto-compaction: once estimated context usage reaches COMPACTION_THRESHOLD
 # of the binding's params.context_length, older messages are summarized into
@@ -695,22 +695,36 @@ class AgentRuntime:
     async def _maybe_tts_reply(
         self, conversation_id: int, user: User, text: str
     ) -> None:
-        """Voice-quick sessions with voice_quick.tts_reply get the reply
-        voiced through the `tts` capability as a follow-up audio message."""
+        """Voice sessions get the reply voiced through the `tts` capability
+        as a follow-up audio message; on a speaker line (voice_session)
+        the audio is also pushed to the esp32's /play endpoint."""
         if not text.strip():
             return
         try:
+            speaker: tuple[str, str | None] | None = None
             async with get_sessionmaker()() as session:
                 conv = await session.get(Conversation, conversation_id)
-                if conv is None or conv.origin != "voice_quick":
+                if conv is None:
                     return
-                if not await settings_service.get_value(
-                    session, user, "voice_quick.tts_reply", False
-                ):
+                voice_line = bool(conv.settings.get("voice_session"))
+                if conv.origin == "voice_quick":
+                    enabled = await settings_service.get_value(
+                        session, user, "voice_quick.tts_reply", False
+                    )
+                elif voice_line:
+                    enabled = await settings_service.get_value(
+                        session, user, "voice_session.tts_reply", True
+                    )
+                else:
                     return
-                audio = await tts.synthesize_speech(
-                    session, user, text[:TTS_TEXT_MAX]
-                )
+                if not enabled:
+                    return
+                spoken = await tts.spoken_version(session, user, text)
+                if not spoken:
+                    return
+                audio = await tts.synthesize_speech(session, user, spoken)
+                if voice_line:
+                    speaker = await _speaker_endpoint(session)
             if audio is None:
                 return
             data, mime = audio
@@ -719,7 +733,7 @@ class AgentRuntime:
                 att, _ = await media_service.create_attachment(
                     session, user, name, mime, data, conversation_id
                 )
-                att.derived = {"status": "done"}
+                att.derived = {"status": "done", "spoken": spoken}
                 conv = await session.get(Conversation, conversation_id)
                 if conv is None:
                     return
@@ -743,6 +757,8 @@ class AgentRuntime:
                     "message.created", conversation_id, {"message": out}
                 )
             )
+            if speaker is not None:
+                await _speaker_play(*speaker, att.id)
         except Exception:
             log.exception("tts reply failed conv=%s", conversation_id)
 
@@ -768,6 +784,39 @@ def _is_scheduled(parts: list[dict[str, Any]]) -> bool:
         p.get("type") == "text" and isinstance(p.get("scheduled"), dict)
         for p in parts
     )
+
+
+async def _speaker_endpoint(
+    session: AsyncSession,
+) -> tuple[str, str | None] | None:
+    """(base_url, token) of the living-room speaker from mcp.env.livingroom."""
+    env = await settings_service.get_global(session, "mcp.env.livingroom")
+    conf = env if isinstance(env, dict) else {}
+    base = str(conf.get("SPEAKER_URL") or "").rstrip("/")
+    if not base:
+        return None
+    token = conf.get("SPEAKER_TOKEN")
+    return base, str(token) if token else None
+
+
+async def _speaker_play(
+    base: str, token: str | None, attachment_id: int
+) -> None:
+    """Ask the esp32 to stream a concierge attachment over HTTP."""
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{base}/play",
+                json={"url": f"/api/attachments/{attachment_id}"},
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            log.warning(
+                "speaker /play att=%s -> %s", attachment_id, resp.status_code
+            )
+    except Exception:
+        log.warning("speaker /play att=%s unreachable", attachment_id)
 
 
 def _message_dict(m: Message) -> dict[str, Any]:

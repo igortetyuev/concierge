@@ -34,7 +34,6 @@ from concierge.settings import service as settings_service
 log = logging.getLogger(__name__)
 
 EDIT_THROTTLE = 1.0
-TTS_TEXT_MAX = 4000
 
 
 @dataclass
@@ -328,7 +327,7 @@ class TelegramSink:
             if not requested:
                 return
             audio = await tts.synthesize_speech(
-                session, user, text[:TTS_TEXT_MAX]
+                session, user, await tts.spoken_version(session, user, text)
             )
         if audio is None:
             return

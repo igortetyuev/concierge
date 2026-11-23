@@ -484,6 +484,10 @@ export const apiClient = {
     api<{ ok: boolean }>(`/conversations/${id}/messages/${messageId}`, {
       method: 'DELETE',
     }),
+  speakMessage: (id: number, messageId: number) =>
+    post<{ attachment_id: number; mime: string }>(
+      `/conversations/${id}/messages/${messageId}/speak`,
+    ),
   forwardMessages: (id: number, userId: number, messageIds: number[]) =>
     post<{ conversation_id: number; forwarded: number }>(
       `/conversations/${id}/messages/forward`,
@@ -613,6 +617,8 @@ export const apiClient = {
     api<string[]>(
       `/admin/providers/${id}/models${task ? `?task=${task}` : ''}`,
     ),
+  listProviderVoices: (id: number) =>
+    api<string[]>(`/admin/providers/${id}/voices`),
 
   listBindings: () => api<BindingOut[]>('/admin/capability-bindings'),
   createBinding: (body: {

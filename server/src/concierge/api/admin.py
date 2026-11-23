@@ -449,6 +449,42 @@ async def list_provider_models(
     return sorted(str(m["id"]) for m in data.get("data", []) if m.get("id"))
 
 
+@router.get("/providers/{provider_id}/voices")
+async def list_provider_voices(
+    provider_id: int,
+    admin: ManageProviders,
+    session: SessionDep,
+) -> list[str]:
+    """Proxy `GET {base_url}/audio/voices` of a TTS provider (speaches,
+    kokorotts); normalized to a sorted name list for the binding dialog."""
+    provider = await session.get(ModelProvider, provider_id)
+    if provider is None:
+        raise HTTPException(404, "provider not found")
+    base = http_base_url(provider)
+    if base is None:
+        raise HTTPException(422, "provider has no base_url")
+    api_key = await provider_api_key(session, admin, provider)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{base}/audio/voices", headers=headers)
+            resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"provider /audio/voices failed: {e}") from e
+    data = resp.json()
+    items = data.get("data") or data.get("voices") or data
+    names: set[str] = set()
+    for v in items if isinstance(items, list) else []:
+        if isinstance(v, str):
+            names.add(v)
+        elif isinstance(v, dict):
+            for key in ("id", "name", "voice_id", "voice"):
+                if v.get(key):
+                    names.add(str(v[key]))
+                    break
+    return sorted(names)
+
+
 # ---------- capability bindings ----------
 
 

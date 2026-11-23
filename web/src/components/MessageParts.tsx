@@ -54,6 +54,70 @@ export function CopyButton({ text }: { text: string }) {
   )
 }
 
+// One playback at a time across all speak buttons.
+let speakAudio: HTMLAudioElement | null = null
+let speakStop: (() => void) | null = null
+
+export function SpeakButton({
+  convId,
+  messageId,
+}: {
+  convId: number
+  messageId: number
+}) {
+  const [state, setState] = useState<'idle' | 'loading' | 'playing'>('idle')
+
+  async function toggle() {
+    if (state === 'loading') return
+    if (state === 'playing') {
+      speakStop?.()
+      return
+    }
+    setState('loading')
+    speakStop?.()
+    try {
+      const { attachment_id } = await apiClient.speakMessage(convId, messageId)
+      const url = await fetchAttachmentObjectUrl(attachment_id)
+      const audio = new Audio(url)
+      const stop = () => {
+        audio.pause()
+        URL.revokeObjectURL(url)
+        if (speakAudio === audio) {
+          speakAudio = null
+          speakStop = null
+        }
+        setState('idle')
+      }
+      speakAudio = audio
+      speakStop = stop
+      audio.onended = stop
+      audio.onerror = stop
+      setState('playing')
+      void audio.play().catch(stop)
+    } catch {
+      setState('idle')
+    }
+  }
+
+  return (
+    <button
+      className="copy-btn"
+      onClick={() => void toggle()}
+      disabled={state === 'loading'}
+      aria-label={state === 'playing' ? 'Остановить' : 'Озвучить'}
+      title={state === 'playing' ? 'Остановить' : 'Озвучить'}
+    >
+      {state === 'loading' ? (
+        <span className="spinner" />
+      ) : state === 'playing' ? (
+        <IconClose size={14} />
+      ) : (
+        <IconSpeaker size={14} />
+      )}
+    </button>
+  )
+}
+
 export function ToolChip({
   name,
   status,

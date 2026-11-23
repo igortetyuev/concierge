@@ -63,7 +63,7 @@ Ollama на отдельном Windows-хосте в LAN: `http://<win-host>:114
 `C:\Users\<user>\ollama-home\run-ollama.ps1` (`OLLAMA_HOST=0.0.0.0`,
 `ollama.exe serve`, лог `ollama.log`; трей-приложение `ollama app.exe` не
 используется — автообновлений нет), firewall-правило для порта 11434.
-Все три LAN-сервиса (Ollama, Speaches, SpeakerId) — задачи `Concierge-*`:
+LAN-сервисы (Ollama, Speaches, SpeakerId, KokoroTts) — задачи `Concierge-*`:
 триггер «при запуске системы», principal igor с LogonType S4U (без пароля,
 без интерактивного входа; процессы в session 0, CUDA там работает),
 ExecutionTimeLimit 0, рестарт каждую минуту. Раньше были HKCU Run-ключи —
@@ -112,7 +112,45 @@ turbo) — в диалоге binding поле «Модель» показыва�
 `GET /admin/providers/{id}/models` (прокси на `{base_url}/models`
 провайдера; для `stt`/`tts` пробрасывается `task=`
 automatic-speech-recognition/text-to-speech — фильтр Speaches).
-TODO: привязать capability `tts` → `speaches-lan`, model `tts-1` (после проверки голосов Kokoro).
+
+### KokoroTTS (синтез речи, ru+en)
+
+Сайдкар `kokorotts` (репо `~/projects/kokorotts`, на хосте —
+`C:\Users\<user>\kokorotts`, venv `kokorotts-venv`, cwd `kokorotts-home`,
+лог `kokorotts.log`): `http://<win-host>:8200/v1`, OpenAI-совместимый
+`POST /v1/audio/speech` → 24 kHz WAV. Русский — `zaakirio/kokoro-ru`
+(KModel + RUAccent g2p, голоса `sveta`/`masha` на base-чекпоинте,
+`dima` на `kokoro-ru-v2-dima.pth`), английский — stock Kokoro-82M
+(`af_*`/`am_*`/`bf_*`/`bm_*`, дефолт `af_heart`); `voice=auto` выбирает
+по кириллице. `GET /v1/audio/voices` — список голосов (проксируется
+сервером как `GET /admin/providers/{id}/voices` и показывается
+выпадающим списком «Голос» в диалоге tts-binding, пишется в
+`params.voice`). Инференс на CPU (torch `…+cpu`, ~10x realtime, ~2.4 ГБ
+RAM на ru-модель). Автозапуск — задача `Concierge-KokoroTts` по образцу
+остальных, firewall `KokoroTTS 8200`. В `run-kokorotts.ps1`:
+`HF_HUB_OFFLINE=1` + `PYTHONUTF8=1` (модели уже в кэше; новые —
+`snapshot_download` вручную без env). `espeakng_loader` несёт свой
+`libespeak-ng.dll`, системный eSpeak не нужен.
+Провайдер `kokoro-lan` (kind `openai-compatible`, base_url
+`http://<win-host>:8200/v1`), binding `tts` → model `kokoro`.
+
+Важно (2026-11-23): базовый Python `AppData\Local\Programs\Python\Python312`
+был обрублен — пропали `Lib/` и часть `DLLs/`, venv'ы не стартовали
+(«No module named 'encodings'»); восстановлен из NuGet-пакета
+`python` 3.12.10 (`tools\Lib|DLLs|include|libs|Scripts` скопированы
+поверх; распаковка в `C:\Users\igor\py312-nuget`). Все venv'ы снова
+рабочие — после перезагрузки сервисы поднимутся. Если `Lib` снова
+исчезнет — повторить копирование оттуда же.
+
+TTS-ответы: автоголос (`voice_quick` PWA, `voice_session` «Гостиная»,
+Telegram `voice_reply`) озвучивает `tts.spoken_version` — текст чистится
+от markdown и при >600 зн. сжимается `chat_fast` до 1–2 фраз (полный
+текст остаётся в ленте, аудио — аттачментом `derived.spoken`).
+`voice_session` дополнительно пушит `/api/attachments/{id}` колонке
+esp32home (`POST {SPEAKER_URL}/play`, токен `SPEAKER_TOKEN` из
+`mcp.env.livingroom`), ошибки только логируются. Кнопка «проговорить»
+на любом сообщении ассистента (`POST
+/conversations/{cid}/messages/{mid}/speak`) озвучивает текст целиком.
 
 ## Speaker-ID
 
