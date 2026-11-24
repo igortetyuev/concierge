@@ -18,6 +18,8 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     UserPromptPart,
 )
 from pydantic_core import to_jsonable_python
@@ -358,6 +360,56 @@ class AgentRuntime:
                             conv.id,
                             {"run_id": run_id, "text": delta_text},
                         )
+                    # Thinking parts stream through a separate event so the
+                    # client can fill its "рассуждение" block; signature-only
+                    # deltas carry no text and are only folded into run_parts.
+                    if isinstance(event, PartStartEvent) and isinstance(
+                        event.part, ThinkingPart
+                    ):
+                        tp = event.part
+                        entry: dict[str, Any] = {
+                            "type": "thinking",
+                            "content": tp.content,
+                        }
+                        if tp.signature is not None:
+                            entry["signature"] = to_jsonable_python(
+                                tp.signature
+                            )
+                        run_parts.append(entry)
+                        await self._emit(
+                            "message.thinking",
+                            conv.id,
+                            {
+                                "run_id": run_id,
+                                "text": tp.content,
+                                "start": True,
+                            },
+                        )
+                    elif (
+                        isinstance(event, PartDeltaEvent)
+                        and isinstance(event.delta, ThinkingPartDelta)
+                    ):
+                        td = event.delta
+                        if run_parts and run_parts[-1].get("type") == "thinking":
+                            last = run_parts[-1]
+                            if td.content_delta:
+                                last["content"] = (
+                                    str(last.get("content", ""))
+                                    + td.content_delta
+                                )
+                            if td.signature_delta:
+                                last["signature"] = str(
+                                    last.get("signature", "")
+                                ) + td.signature_delta
+                        if td.content_delta:
+                            await self._emit(
+                                "message.thinking",
+                                conv.id,
+                                {
+                                    "run_id": run_id,
+                                    "text": td.content_delta,
+                                },
+                            )
                     if isinstance(event, FunctionToolCallEvent):
                         call = event.part
                         run_parts.append(

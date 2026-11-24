@@ -20,6 +20,7 @@ export interface ToolState {
 export interface StreamState {
   runId: number
   text: string
+  thinking: string
   tools: ToolState[]
   status: string
   model?: string
@@ -32,6 +33,16 @@ export const $pending = atom<Record<number, PendingMessage[]>>({})
 export const $streams = atom<Record<number, Record<number, StreamState>>>({})
 /** conversation_id -> message id of the latest live tts reply (autoplay once). */
 export const $ttsAutoplay = atom<Record<number, number>>({})
+/** run_id of streams whose "рассуждение" details block the user opened; the
+ * opened state carries over to the final message when the run completes. */
+export const $openWorkRuns = atom<Set<number>>(new Set())
+
+export function setRunOpen(runId: number, open: boolean): void {
+  const next = new Set($openWorkRuns.get())
+  if (open) next.add(runId)
+  else next.delete(runId)
+  $openWorkRuns.set(next)
+}
 
 function patch<T>(store: { get(): Record<number, T>; set(v: Record<number, T>): void }, id: number, value: T): void {
   store.set({ ...store.get(), [id]: value })
@@ -203,6 +214,7 @@ function streamEntry(conversationId: number, runId: number): StreamState {
     $streams.get()[conversationId]?.[runId] ?? {
       runId,
       text: '',
+      thinking: '',
       tools: [],
       status: 'running',
     }
@@ -219,6 +231,20 @@ function putStream(conversationId: number, entry: StreamState): void {
 export function applyDelta(conversationId: number, runId: number, text: string): void {
   const s = streamEntry(conversationId, runId)
   putStream(conversationId, { ...s, text: s.text + text })
+}
+
+/** A run may emit several thinking blocks; `start` marks a new one, and the
+ * blocks join into a single string separated by a blank line. */
+export function applyThinking(
+  conversationId: number,
+  runId: number,
+  text: string,
+  start: boolean,
+): void {
+  const s = streamEntry(conversationId, runId)
+  const sep = start && s.thinking ? '\n\n' : ''
+  if (!sep && !text) return
+  putStream(conversationId, { ...s, thinking: s.thinking + sep + text })
 }
 
 export function applyTool(conversationId: number, runId: number, part: MessagePart): void {

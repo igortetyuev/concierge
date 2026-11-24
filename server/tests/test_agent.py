@@ -705,6 +705,100 @@ async def test_stream_deltas_include_first_chunk(
     assert "".join(deltas) == final
 
 
+async def test_stream_thinking_deltas(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """Thinking parts stream as message.thinking alongside message.delta —
+    a new ThinkingPart emits start=true, continuation deltas don't, and
+    signature-only deltas carry no text (never reach the client)."""
+    from pydantic_ai.models.function import (
+        DeltaThinkingPart,
+        FunctionModel,
+    )
+    from pydantic_ai.settings import ModelSettings
+
+    from concierge.agent import providers
+    from concierge.agent.providers import BoundModel
+    from concierge.channels import ChannelEvent, get_hub
+
+    async def scripted_stream(messages, agent_info):
+        yield {0: DeltaThinkingPart(content="хм")}
+        yield {0: DeltaThinkingPart(content=", думаю")}
+        yield {0: DeltaThinkingPart(signature="sig-1")}
+        yield "Па"
+        yield "риж"
+        yield {1: DeltaThinkingPart(content="ещё")}
+
+    real_get_model = providers.get_model
+
+    async def fake_get_model(session, capability, user):
+        if capability == "chat":
+            return BoundModel(
+                FunctionModel(stream_function=scripted_stream),
+                "test/scripted",
+                ModelSettings(),
+            )
+        return await real_get_model(session, capability, user)
+
+    monkeypatch.setattr(providers, "get_model", fake_get_model)
+
+    await make_user("thinky", "adult")
+    token = await login(client, "thinky")
+    cid = await _make_conv(client, token)
+
+    deltas: list[str] = []
+    thinking: list[tuple[str, bool]] = []
+
+    class RecSink:
+        presence = False
+        user_id = 0
+
+        async def emit(self, event: ChannelEvent) -> None:
+            if event.type == "message.delta":
+                deltas.append(str(event.data.get("text", "")))
+            elif event.type == "message.thinking":
+                thinking.append(
+                    (
+                        str(event.data.get("text", "")),
+                        event.data.get("start") is True,
+                    )
+                )
+
+    conn = get_hub().connect(RecSink())
+    await get_hub().subscribe(conn, cid)
+    try:
+        msg = await _post_and_collect(client, token, cid, "столица Франции")
+        await get_runtime().wait_idle()
+    finally:
+        await get_hub().disconnect(conn)
+
+    # Thinking went to its own event and never leaked into message.delta.
+    assert "".join(deltas) == "Париж"
+    assert thinking == [
+        ("хм", True),
+        (", думаю", False),
+        ("ещё", True),
+    ]
+
+    async with db.get_sessionmaker()() as session:
+        run = (
+            await session.execute(
+                select(Run).where(Run.trigger_message_id == msg["id"])
+            )
+        ).scalar_one()
+        reply = (
+            await session.execute(
+                select(Message).where(Message.run_id == run.id)
+            )
+        ).scalar_one()
+    thought = [p for p in reply.parts if p["type"] == "thinking"]
+    assert [str(p.get("content", "")) for p in thought] == [
+        "хм, думаю",
+        "ещё",
+    ]
+    assert thought[0].get("signature") == "sig-1"
+
+
 async def test_e2e_stream_over_ws(engine, client: httpx.AsyncClient) -> None:
     await _add_provider("chat", params={"custom_output_text": "стрим"})
     await make_user("alice2", "adult")

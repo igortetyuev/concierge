@@ -510,6 +510,24 @@ async def test_streaming_edits_and_final(engine, tg) -> None:
         assert rows  # inbound + outbound recorded
 
 
+async def test_thinking_events_ignored(engine) -> None:
+    """Thinking deltas are a PWA-only preview — the sink must not mirror
+    them into the Telegram chat."""
+    outbox = FakeOutbox()
+    sink = TelegramSink(outbox, chat_id=100, thread_id=0)
+    await sink.emit(
+        ChannelEvent(
+            "message.thinking",
+            999,
+            {"run_id": 1, "text": "думаю", "start": True},
+        )
+    )
+    await sink.emit(
+        ChannelEvent("message.thinking", 999, {"run_id": 1, "text": "ещё"})
+    )
+    assert outbox.calls == []
+
+
 async def test_commands(engine, tg) -> None:
     user = await make_user("cmd", "adult")
     await _link(user.id)

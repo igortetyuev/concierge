@@ -23,6 +23,7 @@ import {
   $hasMore,
   $loadingMore,
   $messages,
+  $openWorkRuns,
   $pending,
   $streams,
   $ttsAutoplay,
@@ -31,6 +32,7 @@ import {
   loadInitial,
   loadOlder,
   retryPending,
+  setRunOpen,
 } from '../store/messages'
 import type { PendingMessage, StreamState } from '../store/messages'
 import { markLatestRead } from '../store/realtime'
@@ -198,6 +200,7 @@ export default function ChatView({ convId }: { convId: number }) {
   const online = useStore($online)[convId] ?? EMPTY_IDS
   const readSeqs = useStore($readSeqs)[convId] ?? EMPTY_READ
   const detailsOpen = useStore($detailsOpen)
+  const openWorkRuns = useStore($openWorkRuns)
   useStore($typing) // subscribe for typing expiry updates
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -519,6 +522,7 @@ export default function ChatView({ convId }: { convId: number }) {
                       parts={m.parts}
                       convId={convId}
                       messageId={m.id}
+                      runId={m.run_id}
                       origin={conv?.origin}
                       autoplayTts={
                         conv?.origin === 'voice_quick' && m.id === ttsAutoplayId
@@ -552,6 +556,16 @@ export default function ChatView({ convId }: { convId: number }) {
         {streamList.map((s) => (
           <div key={s.runId} className="msg bot stream">
             <div className="bubble">
+              {s.thinking ? (
+                <details
+                  className="part-thinking"
+                  open={openWorkRuns.has(s.runId)}
+                  onToggle={(e) => setRunOpen(s.runId, e.currentTarget.open)}
+                >
+                  <summary className="muted">рассуждение</summary>
+                  <Markdown text={s.thinking} />
+                </details>
+              ) : null}
               {s.tools.map((t) => (
                 <ToolChip
                   key={t.tool_call_id}

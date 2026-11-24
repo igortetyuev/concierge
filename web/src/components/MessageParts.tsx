@@ -5,7 +5,11 @@ import { apiClient, fetchAttachmentObjectUrl } from '../lib/api'
 import type { ChoiceAnswer, MessagePart } from '../lib/api'
 import { fmtBytes } from '../lib/format'
 import { $attachments, setAttachment } from '../store/attachments'
-import { applyMessageCreated } from '../store/messages'
+import {
+  $openWorkRuns,
+  applyMessageCreated,
+  setRunOpen,
+} from '../store/messages'
 import { $composerPrefill } from '../store/ui'
 import ImageLightbox from './ImageLightbox'
 import Markdown from './Markdown'
@@ -578,6 +582,9 @@ interface MessagePartsProps {
   parts: MessagePart[]
   convId?: number
   messageId?: number
+  /** Run that produced this message; when set, the first work block's
+   * "рассуждение" details stays open if the user opened it during streaming. */
+  runId?: number | null
   origin?: string
   /** Autoplay audio marked `tts` (a fresh voice-quick reply). */
   autoplayTts?: boolean
@@ -589,10 +596,12 @@ export default function MessageParts({
   parts,
   convId,
   messageId,
+  runId,
   origin,
   autoplayTts = false,
   mentions,
 }: MessagePartsProps) {
+  const openWorkRuns = useStore($openWorkRuns)
   const hasText = parts.some((p) => p.type === 'text')
   const imageParts = parts.filter((p) => p.type === 'image' && p.attachment_id != null)
   const toolReturns = new Map(
@@ -652,11 +661,27 @@ export default function MessageParts({
     }
     return null // tool_return — rendered inside the matching ToolCallBlock
   }
+  const firstWorkIdx = blocks.findIndex((b) => b.work)
   return (
     <>
       {blocks.map((b, bi) => {
         if (b.work) {
           const hasThinking = b.items.some((p) => p.type === 'thinking')
+          if (runId != null && bi === firstWorkIdx) {
+            return (
+              <details
+                key={`w${bi}`}
+                className="part-thinking"
+                open={openWorkRuns.has(runId)}
+                onToggle={(e) => setRunOpen(runId, e.currentTarget.open)}
+              >
+                <summary className="muted">
+                  {hasThinking ? 'рассуждение' : 'инструменты'}
+                </summary>
+                {b.items.map(renderWorkPart)}
+              </details>
+            )
+          }
           return (
             <details key={`w${bi}`} className="part-thinking">
               <summary className="muted">

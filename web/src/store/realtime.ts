@@ -23,6 +23,7 @@ import {
   applyMessageDeleted,
   applyMessageUpdated,
   applyRunStatus,
+  applyThinking,
   applyTool,
   resyncTail,
 } from './messages'
@@ -130,6 +131,15 @@ function handleEvent(ev: ws.WsEvent): void {
       break
     case 'message.delta':
       if (convId != null) applyDelta(convId, ev.run_id as number, String(ev.text ?? ''))
+      break
+    case 'message.thinking':
+      if (convId != null)
+        applyThinking(
+          convId,
+          ev.run_id as number,
+          String(ev.text ?? ''),
+          ev.start === true,
+        )
       break
     case 'message.tool':
       if (convId != null) applyTool(convId, ev.run_id as number, ev)
