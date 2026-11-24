@@ -16,6 +16,8 @@ const BOOL_PERMS: { key: string; label: string }[] = [
   { key: 'voice_quick_session', label: 'Голосовая быстрая сессия' },
   { key: 'family_memory', label: 'Семейная память (запись)' },
   { key: 'delete_conversations', label: 'Удаление сессий' },
+  { key: 'manage_skills', label: 'Общие скиллы' },
+  { key: 'create_skills', label: 'Личные скиллы' },
 ]
 
 const SETTING_SCOPES = ['user', 'role', 'global'] as const

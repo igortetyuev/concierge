@@ -21,6 +21,7 @@ import {
   applyDelta,
   applyMessageCreated,
   applyMessageDeleted,
+  applyMessageUpdated,
   applyRunStatus,
   applyTool,
   resyncTail,
@@ -112,6 +113,10 @@ function handleEvent(ev: ws.WsEvent): void {
       if (convId != null && convId === $activeId.get()) markLatestRead(convId)
       break
     }
+    case 'message.updated':
+      // Parts of an existing message were rewritten (choice answered).
+      applyMessageUpdated(ev.message as MessageOut)
+      break
     case 'message.deleted':
       if (convId != null) {
         applyMessageDeleted(convId, Number(ev.message_id))

@@ -3,6 +3,7 @@ import type { MouseEvent, PointerEvent, ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useStore } from '@nanostores/react'
 
+import { apiClient } from '../lib/api'
 import type { MessageOut } from '../lib/api'
 import { dayLabel, fmtTime, initials, isSameDay } from '../lib/format'
 import { $user } from '../store/auth'
@@ -16,6 +17,7 @@ import {
   patchConversation,
   typingUsers,
   refreshConversation,
+  upsertConversation,
 } from '../store/conversations'
 import {
   $hasMore,
@@ -274,6 +276,15 @@ export default function ChatView({ convId }: { convId: number }) {
     return others.length > 0 && others.every((x) => (readSeqs[x.user_id] ?? 0) >= m.seq)
   }
 
+  async function onClearSkill(): Promise<void> {
+    try {
+      await apiClient.clearActiveSkill(convId)
+      upsertConversation({ id: convId, active_skill: null })
+    } catch {
+      /* the chip stays; the next conversation.updated fixes it */
+    }
+  }
+
   async function onDeleteMessage(m: MessageOut): Promise<void> {
     if (!window.confirm('Удалить сообщение?')) return
     try {
@@ -355,6 +366,24 @@ export default function ChatView({ convId }: { convId: number }) {
                   : ''}
           </div>
         </div>
+        {conv?.active_skill != null && (
+          <span
+            className="skill-chip"
+            title={conv.active_skill.description || undefined}
+          >
+            <span className="skill-chip-name">
+              /{conv.active_skill.name}
+            </span>
+            <button
+              className="skill-chip-x"
+              onClick={() => void onClearSkill()}
+              aria-label="Завершить скилл"
+              title="Завершить скилл"
+            >
+              <IconClose size={12} />
+            </button>
+          </span>
+        )}
         {msgs.length > 0 && (
           <button
             className="icon-btn"
@@ -489,6 +518,7 @@ export default function ChatView({ convId }: { convId: number }) {
                     <MessageParts
                       parts={m.parts}
                       convId={convId}
+                      messageId={m.id}
                       origin={conv?.origin}
                       autoplayTts={
                         conv?.origin === 'voice_quick' && m.id === ttsAutoplayId

@@ -195,8 +195,64 @@ class TelegramSink:
         elif st is not None and st.tg_msg_id is not None:
             await self._record(st.tg_msg_id, message.get("id"))
         await self._send_part_attachments(message)
+        await self._send_choice(message)
         if isinstance(run_id, int):
             await self._maybe_voice_reply(message)
+
+    async def _send_choice(self, message: dict[str, Any]) -> None:
+        """An unanswered `choice` part: single-question single-select with
+        options gets an inline keyboard (`ch:{message_id}:{idx}`); anything
+        else degrades to numbered text the user answers freely."""
+        part = next(
+            (
+                p
+                for p in message.get("parts") or []
+                if p.get("type") == "choice" and not p.get("answered")
+            ),
+            None,
+        )
+        if part is None:
+            return
+        questions = part.get("questions") or []
+        if (
+            len(questions) == 1
+            and not questions[0].get("multi_select")
+            and questions[0].get("options")
+        ):
+            q = questions[0]
+            markup = [
+                [
+                    (
+                        str(o.get("label") or f"Вариант {i + 1}"),
+                        f"ch:{message.get('id')}:{i}",
+                    )
+                ]
+                for i, o in enumerate(q["options"])
+            ]
+            text = str(q.get("question") or "Выберите:")
+            tg_id = await self._outbox.send(
+                self.chat_id,
+                text,
+                thread_id=self.thread_id,
+                reply_markup=markup,
+            )
+            await self._record(tg_id, message.get("id"))
+            return
+        lines: list[str] = []
+        for i, q in enumerate(questions, 1):
+            lines.append(f"{i}. {q.get('question', '')}")
+            for j, o in enumerate(q.get("options") or [], 1):
+                desc = str(o.get("description") or "")
+                opt = f"   {j}) {o.get('label', '')}"
+                lines.append(f"{opt} — {desc}" if desc else opt)
+        if lines:
+            lines.append("Ответьте номером или текстом.")
+            tg_id = await self._outbox.send(
+                self.chat_id,
+                "\n".join(lines),
+                thread_id=self.thread_id,
+            )
+            await self._record(tg_id, message.get("id"))
 
     async def _send_mdv2(self, chunk_mdv2: str, chunk_raw: str) -> int:
         try:

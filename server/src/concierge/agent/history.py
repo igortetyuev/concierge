@@ -350,6 +350,14 @@ def render_for_summary(parts: list[dict[str, Any]]) -> str:
             )
         elif ptype == "compaction":
             lines.append(f"[прежний конспект]\n{p.get('text', '')}")
+        elif ptype == "choice":
+            qs = "; ".join(
+                str(q.get("question", "")) for q in p.get("questions") or []
+            )
+            lines.append(f"[вопрос пользователю] {qs}")
+        elif ptype == "skill_event":
+            verb = "запущен" if p.get("action") == "start" else "завершён"
+            lines.append(f"[скилл «{p.get('name', '?')}» {verb}]")
         elif p.get("attachment_id") is not None:
             lines.append(f"[{p.get('name') or ptype or 'attachment'}]")
     return "\n".join(line for line in lines if line)

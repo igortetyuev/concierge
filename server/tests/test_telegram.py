@@ -32,6 +32,7 @@ from concierge.conversations.models import (
     Conversation,
     ConversationMember,
     Message,
+    Run,
 )
 from concierge.core import db, ratelimit
 from concierge.core.db import utcnow
@@ -576,6 +577,169 @@ async def test_voice_reply_always(engine, tg) -> None:
     await get_runtime().wait_idle()
     voices = [c for c in tg.outbox.calls if c[0] == "voice"]
     assert voices and voices[0][1] == 100
+
+
+SKILL_MD_TG = """---
+name: shopping
+description: Список покупок
+---
+
+# Покупки
+Тело.
+"""
+
+
+async def _tg_skill(user_id: int | None) -> None:
+    from concierge.skills import service as skills_service
+
+    async with db.get_sessionmaker()() as session:
+        await skills_service.create_skill(
+            session, user_id, SKILL_MD_TG, created_by=user_id or 1
+        )
+
+
+async def test_skill_command_in_group(engine, tg) -> None:
+    user = await make_user("skg", "adult")
+    await _link(user.id)
+    await _tg_skill(user.id)
+    await _add_provider("chat", {"custom_output_text": "ок"})
+
+    await tg.service.handle_message(
+        _im(
+            chat_id=-400,
+            is_private=False,
+            text="/shopping ашан",
+            command="shopping",
+            command_arg="ашан",
+            message_id=1,
+        )
+    )
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.settings["active_skill"]["name"] == "shopping"
+        assert conv.settings["active_skill"]["args"] == "ашан"
+        runs = (
+            await session.execute(
+                select(func.count()).select_from(Run)
+            )
+        ).scalar_one()
+        assert runs == 1
+    assert "ок" in tg.outbox.all_texts(-400)
+
+
+async def test_unknown_command_help_and_skills_list(engine, tg) -> None:
+    user = await make_user("sku", "adult")
+    await _link(user.id)
+    await _tg_skill(user.id)
+
+    await tg.service.handle_message(
+        _im(text="/nosuch", command="nosuch", message_id=70)
+    )
+    assert "/help" in tg.outbox.sent_texts()[-1] or "новая сессия" in tg.outbox.sent_texts()[-1]
+
+    await tg.service.handle_message(
+        _im(text="/skills", command="skills", message_id=71)
+    )
+    assert "/shopping — Список покупок" in tg.outbox.sent_texts()[-1]
+
+
+async def test_choice_keyboard_and_callback(engine, tg) -> None:
+    from concierge.agent.runtime import _message_dict
+    from concierge.conversations import service as conv_service
+
+    user = await make_user("chc", "adult")
+    await _link(user.id)
+    await _add_provider("chat", {"custom_output_text": "ок"})
+
+    # Establish the DM binding + sink.
+    await tg.service.handle_message(_im(text="привет", message_id=80))
+    await get_runtime().wait_idle()
+    tg.outbox.calls.clear()
+
+    # Post an assistant message carrying an unanswered choice part.
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        msg = await conv_service.post_assistant_message(
+            session,
+            conv,
+            [
+                {"type": "text", "text": "Один вопрос."},
+                {
+                    "type": "choice",
+                    "choice_id": "cid1",
+                    "questions": [
+                        {
+                            "question": "Магазин?",
+                            "options": [
+                                {"label": "Ашан"},
+                                {"label": "Пятёрочка"},
+                            ],
+                        }
+                    ],
+                    "answered": False,
+                },
+            ],
+            None,
+        )
+        out = _message_dict(msg)
+        conv_id, msg_id = conv.id, msg.id
+    await get_hub().publish(
+        ChannelEvent("message.created", conv_id, {"message": out})
+    )
+
+    markups = tg.outbox.markups()
+    assert markups
+    flat = [d for row in markups[-1] for _, d in row]
+    assert flat[0] == f"ch:{msg_id}:0"
+
+    # Multi-question choice degrades to numbered text instead of a keyboard.
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, conv_id)
+        assert conv is not None
+        msg2 = await conv_service.post_assistant_message(
+            session,
+            conv,
+            [
+                {
+                    "type": "choice",
+                    "choice_id": "cid2",
+                    "questions": [
+                        {"question": "В1?", "options": [{"label": "а"}]},  # noqa: RUF001
+                        {"question": "В2?", "options": [{"label": "б"}]},  # noqa: RUF001
+                    ],
+                    "answered": False,
+                }
+            ],
+            None,
+        )
+        out2 = _message_dict(msg2)
+    await get_hub().publish(
+        ChannelEvent("message.created", conv_id, {"message": out2})
+    )
+    assert any("Ответьте номером или текстом" in t for t in tg.outbox.sent_texts(100))
+
+    # The callback posts an answer message and schedules a run.
+    await tg.service.handle_callback("cb-ch", 100, 500, f"ch:{msg_id}:0")
+    assert ("answer_cb", "cb-ch", "Ответ принят") in tg.outbox.calls
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        answers = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == conv_id)
+            )
+        ).scalars().all()
+    answered_msg = next(
+        m for m in answers if any(p.get("choice_answer") for p in m.parts)
+    )
+    assert "Ашан" in answered_msg.parts[0]["text"]
+    orig = next(m for m in answers if m.id == msg_id)
+    part = next(p for p in orig.parts if p["type"] == "choice")
+    assert part["answered"] is True
+
+    # Second callback on the answered question is refused.
+    await tg.service.handle_callback("cb-ch2", 100, 500, f"ch:{msg_id}:1")
+    assert ("answer_cb", "cb-ch2", "Уже отвечено") in tg.outbox.calls
 
 
 async def test_presence_filter(engine, tg) -> None:

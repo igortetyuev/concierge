@@ -97,6 +97,13 @@ async def engine() -> AsyncIterator[AsyncEngine]:
             session.add(Role(name=name, permissions=perms))
         await session.commit()
     yield eng
+    # Agent runs are singleton tasks; a stale one would interleave cursors
+    # on the next test's shared StaticPool connection.
+    from concierge.agent.runtime import get_runtime
+
+    for task in get_runtime()._tasks:
+        task.cancel()
+    get_runtime()._locks.clear()  # locks are bound to this test's loop
     db.set_engine(None)
     await eng.dispose()
     settings_service.clear_cache()

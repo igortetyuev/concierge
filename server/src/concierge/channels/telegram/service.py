@@ -26,7 +26,11 @@ from concierge.channels.telegram.models import (
     TelegramMessage,
 )
 from concierge.conversations import service as conversations
-from concierge.conversations.models import Conversation, ConversationMember
+from concierge.conversations.models import (
+    Conversation,
+    ConversationMember,
+    Message,
+)
 from concierge.core import audit, ratelimit
 from concierge.core.db import get_sessionmaker, utcnow
 from concierge.media import service as media_service
@@ -35,6 +39,8 @@ from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.settings import service as settings_service
 from concierge.settings.models import SettingScope
+from concierge.skills import choices as skills_choices
+from concierge.skills import service as skills_service
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +57,8 @@ HELP_TEXT = (
     "/sessions — выбрать сессию\n"
     "/archive — архивировать текущую сессию\n"
     "/voice on|off — озвучивать ответы\n"
+    "/skills — доступные скиллы\n"
+    "/stop — завершить активный скилл\n"
     "/help — эта справка"
 )
 _DM_COMMANDS = {"start", "new", "sessions", "archive", "voice", "help"}
@@ -182,8 +190,25 @@ class TelegramService:
             ):
                 return
             if im.command is not None:
-                await self._command(session, im, user)
-                return
+                cmd = im.command
+                if cmd in _DM_COMMANDS:
+                    await self._command(session, im, user)
+                    return
+                if cmd == "skills":
+                    if im.is_private:
+                        await self._skills_list(session, im, user)
+                    return
+                # /stop and /<available skill> flow through the runtime as a
+                # regular message (in groups too); unknown commands keep the
+                # old behavior — HELP in DM, silence in groups.
+                if cmd == "stop" or await skills_service.resolve(
+                    session, user, cmd
+                ):
+                    im.command = None
+                    im.text = f"/{cmd} {im.command_arg}".rstrip()
+                else:
+                    await self._command(session, im, user)
+                    return
             if not im.text.strip() and im.media is None:
                 return
             conv = await self._resolve_conversation(session, im, user)
@@ -252,6 +277,54 @@ class TelegramService:
             user = await session.get(User, link.user_id) if link else None
             if user is None:
                 await self._outbox.answer_callback(callback_id)
+                return
+            if data.startswith("ch:"):
+                try:
+                    _tag, raw_mid, raw_idx = data.split(":", 2)
+                    message_id = int(raw_mid)
+                except ValueError:
+                    await self._outbox.answer_callback(callback_id)
+                    return
+                msg = await session.get(Message, message_id)
+                conv = (
+                    await conversations.get_member_conversation(
+                        session, msg.conversation_id, user.id
+                    )
+                    if msg is not None
+                    else None
+                )
+                if msg is None or conv is None:
+                    await self._outbox.answer_callback(
+                        callback_id, "Вопрос недоступен"
+                    )
+                    return
+                part = next(
+                    (p for p in msg.parts if p.get("type") == "choice"),
+                    None,
+                )
+                questions = (part or {}).get("questions") or []
+                options = (questions[0].get("options") or []) if questions else []
+                try:
+                    label = str(options[int(raw_idx)]["label"])
+                except (ValueError, IndexError, KeyError):
+                    await self._outbox.answer_callback(callback_id)
+                    return
+                try:
+                    await skills_choices.answer_choice(
+                        session,
+                        conv,
+                        user,
+                        message_id,
+                        str((part or {}).get("choice_id") or ""),
+                        [{"selected": [label], "other": None}],
+                        "telegram",
+                    )
+                except skills_choices.ChoiceError:
+                    await self._outbox.answer_callback(
+                        callback_id, "Уже отвечено"
+                    )
+                    return
+                await self._outbox.answer_callback(callback_id, "Ответ принят")
                 return
             if data.startswith("sel:"):
                 try:
@@ -424,6 +497,18 @@ class TelegramService:
             await self._voice(session, im, user)
         else:
             await self._outbox.send(im.chat_id, HELP_TEXT, thread_id=0)
+
+    async def _skills_list(
+        self, session: AsyncSession, im: InboundMessage, user: User
+    ) -> None:
+        skills = await skills_service.available_skills(session, user)
+        text = (
+            "\n".join(
+                f"/{s.name} — {s.description}" for s in skills
+            )
+            or "Нет доступных скиллов."
+        )
+        await self._outbox.send(im.chat_id, text, thread_id=im.thread_id)
 
     async def _archive(self, session: AsyncSession, im: InboundMessage) -> None:
         binding = await session.get(TelegramBinding, (im.chat_id, 0))

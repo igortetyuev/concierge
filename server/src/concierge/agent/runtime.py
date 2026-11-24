@@ -45,6 +45,10 @@ from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.memory import service as memory_service
 from concierge.settings import service as settings_service
+from concierge.skills import activation as skill_activation
+from concierge.skills import format as skill_format
+from concierge.skills import service as skill_service
+from concierge.skills import tools as skill_tools
 
 log = logging.getLogger(__name__)
 
@@ -96,12 +100,23 @@ class AgentRuntime:
     ) -> None:
         lock = self._locks.setdefault(conversation_id, asyncio.Lock())
         if lock.locked() and not wait:
-            return  # one run per conversation at a time
+            # A /stop or /skill command sent mid-run must not be lost:
+            # re-read the trigger and requeue it with wait=True.
+            if not await self._is_skill_command(trigger_message_id):
+                return  # one run per conversation at a time
+            wait = True
         async with lock:
             try:
                 await self._run(conversation_id, trigger_message_id)
             except Exception:
                 log.exception("agent run failed conv=%s", conversation_id)
+
+    async def _is_skill_command(self, trigger_message_id: int) -> bool:
+        async with get_sessionmaker()() as session:
+            trigger = await session.get(Message, trigger_message_id)
+            if trigger is None:
+                return False
+            return skill_activation.parse_command(trigger.parts) is not None
 
     async def _run(self, conversation_id: int, trigger_message_id: int) -> None:
         session_maker = get_sessionmaker()
@@ -113,8 +128,35 @@ class AgentRuntime:
             user = await session.get(User, trigger.author_id)
             if user is None or conv.status != "active":
                 return
+            # /stop never creates a run: it only unpins the active skill.
+            cmd = skill_activation.parse_command(trigger.parts)
+            if cmd is not None and cmd[0] == "stop":
+                msg = await skill_service.deactivate(
+                    session, conv, user, "stop"
+                )
+                if msg is not None:
+                    await self._emit(
+                        "message.created",
+                        conv.id,
+                        {"message": _message_dict(msg)},
+                    )
+                return
+            activated = False
+            if cmd is not None and (
+                skill := await skill_service.resolve(session, user, cmd[1])
+            ) is not None:
+                msg = await skill_service.activate(
+                    session, conv, skill, cmd[2], user
+                )
+                await self._emit(
+                    "message.created",
+                    conv.id,
+                    {"message": _message_dict(msg)},
+                )
+                activated = True
             if (
                 conv.reply_mode == "mention"
+                and not activated
                 and not _is_scheduled(trigger.parts)
                 and not prompt.is_mentioned(
                     trigger.parts, await prompt.mentions(session, user)
@@ -140,22 +182,77 @@ class AgentRuntime:
             trigger_text = self._content(
                 trigger.parts, conv, member_names, user.id, atts
             )
+            # Phrase triggers fire only when no skill is already pinned.
+            active = await skill_service.active_skill_state(session, conv)
+            if not activated and active is None:
+                plain = " ".join(
+                    str(p.get("text", ""))
+                    for p in trigger.parts
+                    if p.get("type") == "text"
+                )
+                for s in await skill_service.available_skills(session, user):
+                    if s.triggers and skill_format.match_trigger(
+                        s.triggers, plain
+                    ):
+                        msg = await skill_service.activate(
+                            session, conv, s, "", user
+                        )
+                        await self._emit(
+                            "message.created",
+                            conv.id,
+                            {"message": _message_dict(msg)},
+                        )
+                        active = (s, "")
+                        break
+            active_skill_chunk = (
+                skill_activation.active_skill_chunk(*active)
+                if active is not None
+                else None
+            )
             memory_block = await memory_service.retrieve_context(
                 session, user, conv, trigger_text
             )
+            allowed_names = tools.allowed_tool_names(user.role.permissions)
+            skills_catalog = None
+            if "use_skill" in allowed_names:
+                skills_catalog = skill_service.catalog_block(
+                    await skill_service.available_skills(session, user)
+                ) or None
             instructions = await prompt.system_prompt(
-                session, user, conv, list(member_names.values()), memory_block
+                session,
+                user,
+                conv,
+                list(member_names.values()),
+                memory_block,
+                skills_catalog=skills_catalog,
+                active_skill=active_skill_chunk,
             )
             toolsets = await mcp.build_toolsets(session, user)
             funcs = tools.core_tools(user.role.permissions)
-            if "ask_model" in tools.allowed_tool_names(
-                user.role.permissions
-            ) and (
+            if "ask_model" in allowed_names and (
                 named_names := await agent_service.enabled_named_model_names(
                     session
                 )
             ):
                 funcs.append(tools.make_ask_model_tool(named_names))
+            if "use_skill" in allowed_names and (
+                skill_names := [
+                    s.name
+                    for s in await skill_service.available_skills(
+                        session, user
+                    )
+                ]
+            ):
+                funcs.append(skill_tools.make_use_skill_tool(skill_names))
+            for name, tool_fn in (
+                ("end_skill", skill_tools.end_skill),
+                ("read_skill_file", skill_tools.read_skill_file),
+                ("save_skill", skill_tools.save_skill),
+                ("ask_user_question", tools.ask_user_question),
+                ("run_subagent", tools.run_subagent),
+            ):
+                if name in allowed_names:
+                    funcs.append(tool_fn)
             capabilities = tools.allowed_capabilities(user.role.permissions)
             prefix: list[ModelMessage] = []
             if (
@@ -183,6 +280,7 @@ class AgentRuntime:
                 user_id=user.id,
                 conversation_id=conv.id,
                 trigger_seq=trigger.seq,
+                subagent_slots=asyncio.Semaphore(5),
             )
 
             run = Run(
@@ -359,6 +457,7 @@ class AgentRuntime:
                 run_id,
                 [*run_parts, {"type": "text", "text": ERROR_TEXT}],
                 deps.documents,
+                deps.choices,
             )
             return
 
@@ -374,7 +473,12 @@ class AgentRuntime:
                 {"type": "text", "text": output},
             ]
         await self._save_reply(
-            session_maker, conv.id, run_id, stored_parts, deps.documents
+            session_maker,
+            conv.id,
+            run_id,
+            stored_parts,
+            deps.documents,
+            deps.choices,
         )
         await self._ensure_title(conv.id, user, trigger.parts)
         await self._maybe_tts_reply(conv.id, user, output)
@@ -606,6 +710,13 @@ class AgentRuntime:
                     sp = p.get("speaker")
                     if isinstance(sp, dict):
                         speaker_label = str(sp.get("name") or "") or None
+            elif ptype == "skill_event":
+                verb = (
+                    "запущен"
+                    if p.get("action") == "start"
+                    else "завершён"
+                )
+                chunks.append(f"[Скилл «{p.get('name', '?')}» {verb}]")
             elif ptype in (
                 "tool",
                 "tool_call",
@@ -613,6 +724,7 @@ class AgentRuntime:
                 "thinking",
                 "compaction",
                 "mention",
+                "choice",
             ):
                 continue
             elif (aid := media_service.part_attachment_id(p)) is not None and (
@@ -682,13 +794,17 @@ class AgentRuntime:
         run_id: int,
         parts: list[dict[str, Any]],
         document_parts: list[dict[str, Any]] | None = None,
+        choice_parts: list[dict[str, Any]] | None = None,
     ) -> None:
         async with session_maker() as session:
             conv = await session.get(Conversation, conversation_id)
             if conv is None:
                 return
             msg = await conversations.post_assistant_message(
-                session, conv, [*parts, *(document_parts or [])], run_id
+                session,
+                conv,
+                [*parts, *(document_parts or []), *(choice_parts or [])],
+                run_id,
             )
             out = _message_dict(msg)
         await self._hub.publish(

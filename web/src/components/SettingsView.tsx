@@ -5,11 +5,13 @@ import { useStore } from '@nanostores/react'
 import { apiClient } from '../lib/api'
 import type {
   ScheduleOut,
+  SkillOut,
   TelegramLinkCodeOut,
   TelegramLinkOut,
 } from '../lib/api'
 import { $user } from '../store/auth'
-import { IconBack } from './icons'
+import SkillEditor from './SkillEditor'
+import { IconBack, IconTrash } from './icons'
 
 function TelegramSection() {
   const [link, setLink] = useState<TelegramLinkOut | null>(null)
@@ -255,12 +257,118 @@ function SchedulesSection() {
   )
 }
 
+function SkillsSection() {
+  const [skills, setSkills] = useState<SkillOut[] | null>(null)
+  const [editId, setEditId] = useState<number | 'new' | null>(null)
+  const [error, setError] = useState('')
+
+  async function reload() {
+    try {
+      setSkills(await apiClient.listScopedSkills('mine'))
+    } catch {
+      setError('Не удалось загрузить скиллы')
+    }
+  }
+
+  useEffect(() => {
+    void reload()
+  }, [])
+
+  async function remove(s: SkillOut) {
+    if (!window.confirm(`Удалить скилл «${s.name}»?`)) return
+    try {
+      await apiClient.deleteScopedSkill('mine', s.id)
+      if (editId === s.id) setEditId(null)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось удалить')
+    }
+  }
+
+  function onSaved() {
+    setEditId(null)
+    void reload()
+  }
+
+  return (
+    <section className="details-section">
+      <h3>Мои скиллы</h3>
+      {skills === null ? (
+        <div className="muted">Загрузка…</div>
+      ) : (
+        <>
+          {skills.length === 0 && (
+            <div className="muted">
+              Личных скиллов нет — они запускаются командой /имя.
+            </div>
+          )}
+          {skills.map((s) => (
+            <div key={s.id}>
+              <div className="memory-item">
+                <span className="memory-item-text">
+                  /{s.name}
+                  <span className="muted"> · {s.description}</span>
+                </span>
+                <button
+                  className="btn"
+                  onClick={() => setEditId(editId === s.id ? null : s.id)}
+                >
+                  {editId === s.id ? 'Скрыть' : 'Изменить'}
+                </button>
+                <button
+                  className="icon-btn"
+                  title="Удалить скилл"
+                  aria-label="Удалить скилл"
+                  onClick={() => void remove(s)}
+                >
+                  <IconTrash size={16} />
+                </button>
+              </div>
+              {editId === s.id && (
+                <div className="admin-edit">
+                  <SkillEditor
+                    scope="mine"
+                    skill={s}
+                    onSaved={onSaved}
+                    onClose={() => setEditId(null)}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="settings-row">
+            <button
+              className="btn primary"
+              onClick={() => setEditId(editId === 'new' ? null : 'new')}
+            >
+              Новый скилл
+            </button>
+          </div>
+          {editId === 'new' && (
+            <div className="admin-edit">
+              <SkillEditor
+                scope="mine"
+                skill={null}
+                onSaved={onSaved}
+                onClose={() => setEditId(null)}
+              />
+            </div>
+          )}
+        </>
+      )}
+      {error && <div className="auth-error">{error}</div>}
+    </section>
+  )
+}
+
 export default function SettingsView() {
   const me = useStore($user)
   const canTelegram =
     me?.permissions['*'] === true ||
     me?.permissions['manage_users'] === true ||
     me?.permissions['telegram'] === true
+  const canSkills =
+    me?.permissions['*'] === true || me?.permissions['create_skills'] === true
 
   return (
     <div className="memory">
@@ -277,6 +385,7 @@ export default function SettingsView() {
       <div className="details-scroll">
         {canTelegram && <TelegramSection />}
         <SchedulesSection />
+        {canSkills && <SkillsSection />}
       </div>
     </div>
   )

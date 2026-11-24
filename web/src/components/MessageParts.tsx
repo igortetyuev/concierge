@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { apiClient, fetchAttachmentObjectUrl } from '../lib/api'
-import type { MessagePart } from '../lib/api'
+import type { ChoiceAnswer, MessagePart } from '../lib/api'
 import { fmtBytes } from '../lib/format'
 import { $attachments, setAttachment } from '../store/attachments'
+import { applyMessageCreated } from '../store/messages'
 import { $composerPrefill } from '../store/ui'
 import ImageLightbox from './ImageLightbox'
 import Markdown from './Markdown'
@@ -415,9 +416,168 @@ function VoiceTextPart({
   )
 }
 
+interface ChoiceOption {
+  label: string
+  description?: string
+}
+
+interface ChoiceQuestion {
+  question: string
+  header?: string
+  options?: ChoiceOption[]
+  multi_select?: boolean
+}
+
+/** `choice` part (ask_user_question): options card or open-question text. */
+function ChoicePart({
+  part,
+  convId,
+  messageId,
+}: {
+  part: MessagePart
+  convId?: number
+  messageId?: number
+}) {
+  const questions = (part.questions as ChoiceQuestion[] | undefined) ?? []
+  const storedAnswers = (part.answers as ChoiceAnswer[] | undefined) ?? []
+  const [sel, setSel] = useState<Record<number, string[]>>({})
+  const [other, setOther] = useState<Record<number, string>>({})
+  const [done, setDone] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const answered = part.answered === true || done
+  const interactive =
+    !answered && convId != null && messageId != null
+  const withOptions = questions
+    .map((q, i) => ({ q, i }))
+    .filter(({ q }) => (q.options?.length ?? 0) > 0)
+  const canSubmit =
+    interactive &&
+    withOptions.length > 0 &&
+    withOptions.every(
+      ({ i }) =>
+        (sel[i]?.length ?? 0) > 0 || (other[i] ?? '').trim().length > 0,
+    )
+
+  function toggle(qi: number, label: string, multi: boolean) {
+    setSel((cur) => {
+      const list = cur[qi] ?? []
+      const next = multi
+        ? list.includes(label)
+          ? list.filter((x) => x !== label)
+          : [...list, label]
+        : [label]
+      return { ...cur, [qi]: next }
+    })
+  }
+
+  async function submit() {
+    if (!canSubmit || convId == null || messageId == null) return
+    setBusy(true)
+    setError('')
+    try {
+      const reply = await apiClient.answerChoice(
+        convId,
+        messageId,
+        String(part.choice_id ?? ''),
+        questions.map((_q, i) => ({
+          selected: sel[i] ?? [],
+          other: (other[i] ?? '').trim() || null,
+        })),
+      )
+      setDone(true)
+      applyMessageCreated(reply)
+    } catch {
+      setError('Не удалось отправить ответ')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function pickedText(i: number): string {
+    // Until message.updated lands, show the just-submitted selection.
+    const ans = storedAnswers[i] ?? {
+      selected: sel[i] ?? [],
+      other: (other[i] ?? '').trim() || null,
+    }
+    const otherText = (ans.other ?? '').trim()
+    return otherText ? `Другое: ${otherText}` : (ans.selected ?? []).join('; ')
+  }
+
+  return (
+    <div className={`choice-card${answered ? ' done' : ''}`}>
+      {questions.map((q, i) => (
+        <div key={i} className="choice-q">
+          {q.header ? <div className="choice-q-head">{q.header}</div> : null}
+          <div className="choice-q-text">{q.question}</div>
+          {(q.options?.length ?? 0) === 0 ? (
+            answered && pickedText(i) ? (
+              <div className="choice-answer muted">{pickedText(i)}</div>
+            ) : (
+              <div className="choice-open-hint muted">Ответьте в чате</div>
+            )
+          ) : answered ? (
+            <div className="choice-answer muted">{pickedText(i)}</div>
+          ) : (
+            <>
+              <div className="choice-opts">
+                {(q.options ?? []).map((opt) => {
+                  const checked = (sel[i] ?? []).includes(opt.label)
+                  return (
+                    <label key={opt.label} className="choice-opt">
+                      <input
+                        type={q.multi_select ? 'checkbox' : 'radio'}
+                        name={`${String(part.choice_id ?? 'ch')}-${i}`}
+                        checked={checked}
+                        onChange={() =>
+                          toggle(i, opt.label, q.multi_select === true)
+                        }
+                      />
+                      <span>
+                        {opt.label}
+                        {opt.description ? (
+                          <span className="choice-opt-desc">
+                            {' '}
+                            — {opt.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="choice-other">
+                <input
+                  value={other[i] ?? ''}
+                  onChange={(e) =>
+                    setOther((cur) => ({ ...cur, [i]: e.target.value }))
+                  }
+                  placeholder="Другое…"
+                />
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+      {interactive && withOptions.length > 0 && (
+        <button
+          className="btn primary"
+          disabled={!canSubmit || busy}
+          onClick={() => void submit()}
+        >
+          Отправить
+        </button>
+      )}
+      {error && <div className="auth-error">{error}</div>}
+    </div>
+  )
+}
+
 interface MessagePartsProps {
   parts: MessagePart[]
   convId?: number
+  messageId?: number
   origin?: string
   /** Autoplay audio marked `tts` (a fresh voice-quick reply). */
   autoplayTts?: boolean
@@ -428,6 +588,7 @@ interface MessagePartsProps {
 export default function MessageParts({
   parts,
   convId,
+  messageId,
   origin,
   autoplayTts = false,
   mentions,
@@ -532,6 +693,24 @@ export default function MessageParts({
         }
         if (p.type === 'mention') {
           return null
+        }
+        if (p.type === 'skill_event') {
+          return (
+            <span key={i}>
+              Скилл «{String(p.name ?? '')}»{' '}
+              {p.action === 'end' ? 'завершён' : 'запущен'}
+            </span>
+          )
+        }
+        if (p.type === 'choice') {
+          return (
+            <ChoicePart
+              key={i}
+              part={p}
+              convId={convId}
+              messageId={messageId}
+            />
+          )
         }
         if (p.type === 'compaction') {
           const count = Number(p.count ?? 0)

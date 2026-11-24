@@ -24,6 +24,7 @@ from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
 from concierge.schedule.models import ScheduledJob
 from concierge.settings.models import Setting, SettingScope
+from concierge.skills.models import Skill, SkillFile
 
 __all__ = [
     "Attachment",
@@ -43,6 +44,8 @@ __all__ = [
     "ScheduledJob",
     "Setting",
     "SettingScope",
+    "Skill",
+    "SkillFile",
     "TelegramBinding",
     "TelegramLink",
     "TelegramLinkCode",

@@ -20,6 +20,12 @@ export interface MemberOut {
   last_read_seq: number
 }
 
+export interface ActiveSkillOut {
+  skill_id: number
+  name: string
+  description: string
+}
+
 export interface ConversationOut {
   id: number
   kind: string
@@ -34,6 +40,7 @@ export interface ConversationOut {
   archived_at: string | null
   assistant_name: string
   members: MemberOut[]
+  active_skill: ActiveSkillOut | null
 }
 
 export interface SpeakerInfo {
@@ -285,6 +292,44 @@ export interface MemoryItemOut {
   created_at: string | null
 }
 
+export interface SkillBrief {
+  id: number
+  name: string
+  aliases: string[]
+  description: string
+  argument_hint: string | null
+  personal: boolean
+}
+
+export interface SkillOut {
+  id: number
+  name: string
+  description: string
+  aliases: string[]
+  triggers: string[]
+  argument_hint: string | null
+  personal: boolean
+  enabled: boolean
+  version: number
+  role_ids: (number | string)[]
+  content: string
+  files: string[]
+  created_at: string | null
+}
+
+export interface SkillImportOut {
+  skill: SkillOut
+  skipped: string[]
+}
+
+export interface ChoiceAnswer {
+  selected: string[]
+  other: string | null
+}
+
+/** 'mine' — personal skills (/skills/mine), 'admin' — shared (/admin/skills). */
+export type SkillScope = 'mine' | 'admin'
+
 interface TokenOut {
   access_token: string
   token_type: string
@@ -387,6 +432,27 @@ export async function fetchAttachmentObjectUrl(id: number): Promise<string> {
   const resp = await fetch(`${BASE}/attachments/${id}`, { headers })
   if (!resp.ok) throw new ApiError(resp.status, 'attachment fetch failed')
   return URL.createObjectURL(await resp.blob())
+}
+
+/** Authenticated file download (skill export zip). */
+async function fetchBlob(path: string): Promise<{ blob: Blob; filename: string }> {
+  await ensureFreshToken()
+  const headers = new Headers()
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  const resp = await fetch(`${BASE}${path}`, { headers })
+  if (!resp.ok) throw new ApiError(resp.status, 'download failed')
+  const cd = resp.headers.get('content-disposition') ?? ''
+  const m = /filename="?([^";]+)"?/.exec(cd)
+  return { blob: await resp.blob(), filename: m?.[1] ?? 'download.zip' }
+}
+
+/** Encode a relative file path for the `/files/{path:path}` endpoints. */
+function encPath(p: string): string {
+  return p.split('/').map(encodeURIComponent).join('/')
+}
+
+function skillBase(scope: SkillScope): string {
+  return scope === 'mine' ? '/skills/mine' : '/admin/skills'
 }
 
 function post<T>(path: string, body?: unknown): Promise<T> {
@@ -732,4 +798,53 @@ export const apiClient = {
     post<MemoryItemOut>('/memory', { text, scope }),
   deleteMemory: (id: number) =>
     api<{ ok: boolean }>(`/memory/${id}`, { method: 'DELETE' }),
+
+  listSkills: () => api<SkillBrief[]>('/skills'),
+  listScopedSkills: (scope: SkillScope) =>
+    api<SkillOut[]>(skillBase(scope)),
+  getScopedSkill: (scope: SkillScope, id: number) =>
+    api<SkillOut>(`${skillBase(scope)}/${id}`),
+  createScopedSkill: (
+    scope: SkillScope,
+    body: { content: string; role_ids?: (number | string)[]; enabled?: boolean },
+  ) => post<SkillOut>(skillBase(scope), body),
+  patchScopedSkill: (
+    scope: SkillScope,
+    id: number,
+    patch: {
+      content?: string
+      role_ids?: (number | string)[]
+      enabled?: boolean
+    },
+  ) => patchFn<SkillOut>(`${skillBase(scope)}/${id}`, patch),
+  deleteScopedSkill: (scope: SkillScope, id: number) =>
+    api<{ ok: boolean }>(`${skillBase(scope)}/${id}`, { method: 'DELETE' }),
+  importScopedSkill: (scope: SkillScope, file: File | Blob, name: string) => {
+    const form = new FormData()
+    form.append('file', file, name)
+    return api<SkillImportOut>(`${skillBase(scope)}/import`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  exportScopedSkill: (scope: SkillScope, id: number) =>
+    fetchBlob(`${skillBase(scope)}/${id}/export`),
+  putScopedSkillFile: (scope: SkillScope, id: number, path: string, content: string) =>
+    api<{ ok: boolean }>(`${skillBase(scope)}/${id}/files/${encPath(path)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    }),
+  deleteScopedSkillFile: (scope: SkillScope, id: number, path: string) =>
+    api<{ ok: boolean }>(`${skillBase(scope)}/${id}/files/${encPath(path)}`, {
+      method: 'DELETE',
+    }),
+
+  answerChoice: (id: number, messageId: number, choiceId: string, answers: ChoiceAnswer[]) =>
+    post<MessageOut>(`/conversations/${id}/messages/${messageId}/answer`, {
+      choice_id: choiceId,
+      answers,
+    }),
+  clearActiveSkill: (id: number) =>
+    api<{ ok: boolean }>(`/conversations/${id}/skill`, { method: 'DELETE' }),
 }

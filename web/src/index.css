@@ -1974,3 +1974,164 @@ a {
 .schedule-item .settings-row input[type='datetime-local'] {
   max-width: 210px;
 }
+
+/* ---------- skills ---------- */
+
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  max-width: 40%;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.skill-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-chip-x {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.skill-chip-x:hover {
+  color: var(--text);
+}
+
+.slash-desc {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+.skill-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.skill-tabs button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.skill-tabs button.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.skill-md {
+  width: 100%;
+  min-height: 240px;
+  font-family: var(--font-code);
+  font-size: 0.82rem;
+}
+
+.skill-preview {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.skill-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.choice-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 220px;
+  max-width: 420px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.choice-card .btn {
+  align-self: flex-start;
+}
+
+.choice-q {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.choice-q-head {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.choice-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.choice-opt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.choice-opt input {
+  margin-top: 3px;
+}
+
+.choice-opt-desc {
+  color: var(--text-2);
+  font-size: 0.8rem;
+}
+
+.choice-other input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+}
+
+.choice-answer {
+  font-size: 0.85rem;
+}
+
+.choice-open-hint {
+  font-size: 0.8rem;
+}

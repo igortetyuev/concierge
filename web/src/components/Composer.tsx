@@ -3,7 +3,7 @@ import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { apiClient } from '../lib/api'
-import type { AttachmentOut, MessagePart } from '../lib/api'
+import type { AttachmentOut, MessagePart, SkillBrief } from '../lib/api'
 import {
   audioExt,
   micBlockedReason,
@@ -38,6 +38,13 @@ interface MentionTarget {
   userId: number | null
 }
 
+interface SlashItem {
+  key: string
+  cmd: string
+  desc: string
+  hint: string | null
+}
+
 /** `@` token under the caret: start index + typed query, or null. */
 function detectMention(
   value: string,
@@ -50,6 +57,21 @@ function detectMention(
   const query = before.slice(at + 1)
   if (query.includes('\n') || query.length > 30) return null
   return { start: at, query }
+}
+
+/** `/` command token under the caret (must open the input), or null. */
+function detectSlash(
+  value: string,
+  caret: number,
+): { start: number; query: string } | null {
+  if (!value.startsWith('/')) return null
+  const tail = value.slice(1)
+  const space = tail.search(/\s/)
+  const tokenEnd = space < 0 ? value.length : space + 1
+  if (caret > tokenEnd) return null
+  const query = value.slice(1, caret)
+  if (query.length > 64) return null
+  return { start: 0, query }
 }
 
 export default function Composer({ convId }: { convId: number }) {
@@ -80,6 +102,15 @@ export default function Composer({ convId }: { convId: number }) {
     query: string
   } | null>(null)
   const [mentionIdx, setMentionIdx] = useState(0)
+  const [slash, setSlash] = useState<{ start: number; query: string } | null>(
+    null,
+  )
+  const [slashIdx, setSlashIdx] = useState(0)
+  const [skills, setSkills] = useState<SkillBrief[] | null>(null)
+  // argument_hint of the just-inserted /command, shown as the placeholder.
+  const [argHint, setArgHint] = useState<{ cmd: string; hint: string } | null>(
+    null,
+  )
 
   const mentionTargets = useMemo<MentionTarget[]>(() => {
     if (conv?.kind !== 'group') return []
@@ -106,16 +137,77 @@ export default function Composer({ convId }: { convId: number }) {
   const mentionOpen = mention != null && mentionList.length > 0
   const activeMention = Math.min(mentionIdx, mentionList.length - 1)
 
+  const slashQuery = slash?.query.toLowerCase() ?? ''
+  const slashList: SlashItem[] = slash
+    ? [
+        ...(skills ?? [])
+          .filter(
+            (s) =>
+              !slashQuery ||
+              s.name.includes(slashQuery) ||
+              s.aliases.some((a) => a.includes(slashQuery)) ||
+              s.description.toLowerCase().includes(slashQuery),
+          )
+          .map((s) => ({
+            key: `s${s.id}`,
+            cmd: s.name,
+            desc: s.description,
+            hint: s.argument_hint,
+          })),
+        ...(conv?.active_skill != null
+          ? [
+              {
+                key: 'stop',
+                cmd: 'stop',
+                desc: 'завершить активный скилл',
+                hint: null,
+              },
+              {
+                key: 'skills',
+                cmd: 'skills',
+                desc: 'список скиллов',
+                hint: null,
+              },
+            ].filter(
+              (i) =>
+                !slashQuery ||
+                i.cmd.includes(slashQuery) ||
+                i.desc.includes(slashQuery),
+            )
+          : []),
+      ]
+    : []
+  const slashOpen = slash != null && slashList.length > 0
+  const activeSlash = Math.min(slashIdx, slashList.length - 1)
+
   // ArrowUp/ArrowDown recall index resets when the conversation changes.
   useEffect(() => {
     histIdxRef.current = -1
     draftRef.current = ''
     setMention(null)
+    setSlash(null)
+    setArgHint(null)
   }, [convId])
 
   useEffect(() => {
     setMentionIdx(0)
   }, [mentionQuery])
+
+  useEffect(() => {
+    setSlashIdx(0)
+  }, [slashQuery])
+
+  // Skills are fetched lazily on the first '/' and cached for the session.
+  const skillsFetched = useRef(false)
+  useEffect(() => {
+    if (slash != null && skills === null && !skillsFetched.current) {
+      skillsFetched.current = true
+      apiClient
+        .listSkills()
+        .then(setSkills)
+        .catch(() => setSkills([]))
+    }
+  }, [slash, skills])
 
   function autoresize() {
     const el = areaRef.current
@@ -176,9 +268,10 @@ export default function Composer({ convId }: { convId: number }) {
     setText(value)
     autoresize()
     const el = areaRef.current
-    setMention(
-      detectMention(value, caret ?? el?.selectionStart ?? value.length),
-    )
+    const pos = caret ?? el?.selectionStart ?? value.length
+    setMention(detectMention(value, pos))
+    setSlash(detectSlash(value, pos))
+    setArgHint((h) => (h && !value.startsWith(h.cmd) ? null : h))
     const now = Date.now()
     if (value && now - lastTyping.current > TYPING_INTERVAL) {
       lastTyping.current = now
@@ -194,6 +287,21 @@ export default function Composer({ convId }: { convId: number }) {
     const next = text.slice(0, mention.start) + insert + text.slice(caret)
     const pos = mention.start + insert.length
     onChange(next, pos)
+    requestAnimationFrame(() => {
+      el.focus()
+      el.selectionStart = el.selectionEnd = pos
+    })
+  }
+
+  function completeSlash(item: SlashItem) {
+    const el = areaRef.current
+    if (!el || slash == null) return
+    const caret = el.selectionStart ?? text.length
+    const insert = `/${item.cmd} `
+    const next = insert + text.slice(caret)
+    const pos = insert.length
+    onChange(next, pos)
+    setArgHint(item.hint ? { cmd: insert, hint: item.hint } : null)
     requestAnimationFrame(() => {
       el.focus()
       el.selectionStart = el.selectionEnd = pos
@@ -314,6 +422,7 @@ export default function Composer({ convId }: { convId: number }) {
         applyMessageCreated(resp.message)
         setText('')
         setMention(null)
+        setSlash(null)
         requestAnimationFrame(autoresize)
         for (const s of ready) if (s.previewUrl) URL.revokeObjectURL(s.previewUrl)
         setStaged((list) => list.filter((s) => s.attachment == null))
@@ -342,6 +451,8 @@ export default function Composer({ convId }: { convId: number }) {
     const ready = staged.filter((s) => s.attachment != null)
     setText('')
     setMention(null)
+    setSlash(null)
+    setArgHint(null)
     requestAnimationFrame(autoresize)
     if (!value.trim() && !ready.length) return
     const parts: MessagePart[] = []
@@ -401,6 +512,29 @@ export default function Composer({ convId }: { convId: number }) {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashOpen && !e.nativeEvent.isComposing) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIdx((i) => (i + 1) % slashList.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIdx((i) => (i - 1 + slashList.length) % slashList.length)
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        const item = slashList[activeSlash]
+        if (item) completeSlash(item)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlash(null)
+        return
+      }
+    }
     if (mentionOpen && !e.nativeEvent.isComposing) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -493,6 +627,30 @@ export default function Composer({ convId }: { convId: number }) {
           ))}
         </div>
       )}
+      {slashOpen && (
+        <div className="mention-pop" role="listbox">
+          {slashList.map((it, i) => (
+            <button
+              key={it.key}
+              type="button"
+              role="option"
+              aria-selected={i === activeSlash}
+              className={`mention-item${i === activeSlash ? ' active' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                completeSlash(it)
+              }}
+              onMouseEnter={() => setSlashIdx(i)}
+            >
+              <span className="mention-name">/{it.cmd}</span>
+              <span className="muted slash-desc">
+                {it.desc}
+                {it.hint ? ` ${it.hint}` : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {mentionOpen && (
         <div className="mention-pop" role="listbox">
           {mentionList.map((t, i) => (
@@ -572,18 +730,25 @@ export default function Composer({ convId }: { convId: number }) {
             value={text}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
-            onSelect={(e) =>
+            onSelect={(e) => {
+              const collapsed =
+                e.currentTarget.selectionStart ===
+                e.currentTarget.selectionEnd
+              const caret = e.currentTarget.selectionStart
               setMention(
-                e.currentTarget.selectionStart === e.currentTarget.selectionEnd
-                  ? detectMention(
-                      e.currentTarget.value,
-                      e.currentTarget.selectionStart,
-                    )
+                collapsed
+                  ? detectMention(e.currentTarget.value, caret)
                   : null,
               )
-            }
-            onBlur={() => setMention(null)}
-            placeholder="Сообщение"
+              setSlash(
+                collapsed ? detectSlash(e.currentTarget.value, caret) : null,
+              )
+            }}
+            onBlur={() => {
+              setMention(null)
+              setSlash(null)
+            }}
+            placeholder={argHint?.hint ?? 'Сообщение'}
             aria-label="Сообщение"
           />
         )}

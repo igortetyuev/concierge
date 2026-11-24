@@ -63,6 +63,7 @@ class ConversationOut(BaseModel):
     archived_at: datetime | None
     assistant_name: str
     members: list[MemberOut]
+    active_skill: dict[str, Any] | None
 
 
 class MessageOut(BaseModel):
@@ -130,7 +131,26 @@ async def _conv_out(
         archived_at=conv.archived_at,
         assistant_name=await agent_prompt.assistant_name(session, user),
         members=await _members_out(session, conv),
+        active_skill=await _active_skill_out(session, conv),
     )
+
+
+async def _active_skill_out(
+    session: AsyncSession, conv: Conversation
+) -> dict[str, Any] | None:
+    state = (conv.settings or {}).get("active_skill")
+    if not isinstance(state, dict):
+        return None
+    from concierge.skills.models import Skill
+
+    skill = await session.get(Skill, state.get("skill_id") or 0)
+    if skill is None or not skill.enabled:
+        return None
+    return {
+        "skill_id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+    }
 
 
 async def _member_conv_or_404(
@@ -526,6 +546,45 @@ async def delete_message(
     except Exception:
         log.exception("message %s vector not deleted", message_id)
     return {"ok": True}
+
+
+class AnswerBody(BaseModel):
+    choice_id: str
+    answers: list[dict[str, Any]]
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/answer",
+    status_code=201,
+)
+async def answer_message(
+    conversation_id: int,
+    message_id: int,
+    body: AnswerBody,
+    user: CurrentUser,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Answer a `choice` part (from ask_user_question); posts a user message
+    carrying a `choice_answer` snapshot and schedules the next run."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    if conv.status != "active":
+        raise HTTPException(409, "conversation is archived")
+    from concierge.skills import choices as skill_choices
+
+    try:
+        reply = await skill_choices.answer_choice(
+            session,
+            conv,
+            user,
+            message_id,
+            body.choice_id,
+            body.answers,
+            "web",
+        )
+    except skill_choices.ChoiceError as e:
+        code = 404 if str(e) == "not_found" else 409
+        raise HTTPException(code, "choice not found" if code == 404 else "already answered") from e
+    return MessageOut.of(reply).model_dump(mode="json")
 
 
 class SpeakOut(BaseModel):

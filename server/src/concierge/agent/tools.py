@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import ipaddress
 import logging
 import re
@@ -10,9 +11,11 @@ from datetime import timedelta
 from html import unescape
 from typing import Any, Literal
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import httpx
 import trafilatura
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +49,11 @@ class ToolDeps:
     # messages before this request" use it as the cutoff (0 = no cutoff).
     trigger_seq: int = 0
     documents: list[dict[str, Any]] = field(default_factory=list)
+    # `choice` parts appended to the reply (ask_user_question).
+    choices: list[dict[str, Any]] = field(default_factory=list)
+    # run_subagent recursion guard + per-run parallelism cap (5).
+    subagent_depth: int = 0
+    subagent_slots: asyncio.Semaphore | None = None
 
 
 async def search_messages(
@@ -665,6 +673,158 @@ async def forward_messages(
     }
 
 
+QUESTION_MAX = 4
+QUESTION_OPTIONS_MAX = 4
+
+
+class QuestionOption(BaseModel):
+    """One selectable option; the first option is the recommended one."""
+
+    label: str
+    description: str = ""
+
+
+class AskQuestion(BaseModel):
+    """A question with up to 4 options; empty options = open question."""
+
+    question: str
+    header: str = ""
+    options: list[QuestionOption] = []
+    multi_select: bool = False
+
+
+async def ask_user_question(
+    ctx: RunContext[ToolDeps], questions: list[AskQuestion]
+) -> dict[str, Any]:
+    """Ask the user a multiple-choice (or open) question.
+
+    1-4 questions; each has `options` (up to 4; empty = open question,
+    answered in free text) and `multi_select` for checkbox-style answers.
+    A free-text "Другое" option always exists. The answer arrives as the
+    next user message — finish your turn briefly after calling, don't guess.
+    """
+    if ctx.deps.choices:
+        return {"error": "already asked a question this run"}
+    if not questions or len(questions) > QUESTION_MAX:
+        return {"error": "1-4 questions required"}
+    for q in questions:
+        if not q.question.strip():
+            return {"error": "every question needs a non-empty text"}
+        if len(q.options) > QUESTION_OPTIONS_MAX:
+            return {"error": "at most 4 options per question"}
+        for opt in q.options:
+            if not opt.label.strip():
+                return {"error": "every option needs a label"}
+    ctx.deps.choices.append(
+        {
+            "type": "choice",
+            "choice_id": uuid4().hex,
+            "questions": [q.model_dump(mode="json") for q in questions],
+            "answered": False,
+        }
+    )
+    return {
+        "ok": True,
+        "note": (
+            "вопрос показан пользователю; заверши ход коротко, не повторяя "
+            "варианты — ответ придёт следующим сообщением"
+        ),
+    }
+
+
+SUBAGENT_TIMEOUT = 300.0
+SUBAGENT_ANSWER_MAX = 8000
+SUBAGENT_INSTRUCTIONS = (
+    "Ты — субагент семейного консьержа. Выполни порученную подзадачу "
+    "самостоятельно и верни только результат — кратко и по-русски. "
+    "Диалоговой истории у тебя нет; вся необходимая информация — в задаче "  # noqa: RUF001
+    "и контексте."
+)
+SUBAGENT_EXCLUDED = {
+    "run_subagent",
+    "ask_user_question",
+    "use_skill",
+    "end_skill",
+    "save_skill",
+    "invite_member",
+    "forward_messages",
+    "schedule_task",
+    "pause_scheduled_task",
+    "resume_scheduled_task",
+    "cancel_scheduled_task",
+}
+
+
+async def run_subagent(
+    ctx: RunContext[ToolDeps],
+    goal: str,
+    context: str = "",
+    model: Literal["default", "fast"] = "default",
+) -> dict[str, Any]:
+    """Run a self-contained subtask in a fresh agent without chat history.
+
+    Use for parallel/independent subtasks a skill asks for (Task/Agent in
+    Claude terms, delegate_task in Hermes terms). `model="fast"` prefers the
+    cheaper chat_fast binding. The subtask sees only `goal` + `context`.
+    """
+    if ctx.deps.subagent_depth >= 1:
+        return {"error": "subagents cannot spawn subagents"}
+    slots = ctx.deps.subagent_slots
+    if slots is not None and slots.locked():
+        return {"error": "subagent limit reached for this run"}
+
+    async def _go() -> dict[str, Any]:
+        async with get_sessionmaker()() as session:
+            user = await session.get(User, ctx.deps.user_id)
+            if user is None:
+                return {"error": "user not found"}
+            bound = None
+            if model == "fast":
+                bound = await providers.get_model(session, "chat_fast", user)
+            bound = bound or await providers.get_model(session, "chat", user)
+            if bound is None:
+                return {"error": "no chat model bound"}
+            perms = user.role.permissions
+            funcs = [
+                CORE_TOOLS[n]
+                for n in allowed_tool_names(perms)
+                if n in CORE_TOOLS and n not in SUBAGENT_EXCLUDED
+            ]
+            caps = capabilities_for(
+                n
+                for n in allowed_tool_names(perms)
+                if n not in SUBAGENT_EXCLUDED
+            )
+        deps = dataclasses.replace(ctx.deps, subagent_depth=1)
+        agent = Agent(
+            bound.model,
+            deps_type=ToolDeps,
+            instructions=(
+                f"{SUBAGENT_INSTRUCTIONS}\n\n[Сейчас] {local_now().isoformat()}"
+            ),
+            tools=funcs,
+            capabilities=caps,
+            model_settings=bound.settings,
+        )
+        prompt_text = goal if not context else f"{goal}\n\nКонтекст:\n{context}"  # noqa: RUF001
+        try:
+            result = await asyncio.wait_for(
+                agent.run(prompt_text, deps=deps, usage=ctx.usage),
+                SUBAGENT_TIMEOUT,
+            )
+        except TimeoutError:
+            return {"error": "subagent timed out"}
+        except Exception as e:
+            log.warning("run_subagent failed: %s", e)
+            return {"error": f"subagent failed: {e}"}
+        return {"output": str(result.output)[:SUBAGENT_ANSWER_MAX]}
+
+    if slots is None:
+        return await _go()
+    async with slots:
+        return await _go()
+
+
 def _schedule_tools() -> list[Callable[..., Any]]:
     from concierge.schedule import tools as schedule_tools
 
@@ -701,7 +861,15 @@ CAPABILITY_TOOLS = ("web_search",)
 
 # Tools built per run from DB state rather than static functions; they share
 # the tools.allow/deny lists too.
-DYNAMIC_TOOLS = ("ask_model",)
+DYNAMIC_TOOLS = (
+    "ask_model",
+    "use_skill",
+    "end_skill",
+    "read_skill_file",
+    "save_skill",
+    "ask_user_question",
+    "run_subagent",
+)
 
 # Tool names selectable per named model (its `tools` checklist); ask_model
 # itself is excluded — no recursion.
@@ -728,6 +896,8 @@ def allowed_tool_names(permissions: dict[str, Any]) -> list[str]:
         ]
     if not has_permission(permissions, "code_agent"):
         names = [n for n in names if n != "delegate_coding_task"]
+    if not has_permission(permissions, "create_skills"):
+        names = [n for n in names if n != "save_skill"]
     return names
 
 

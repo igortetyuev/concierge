@@ -46,6 +46,8 @@ BOT_COMMANDS = [
     BotCommand(command="sessions", description="Выбрать сессию"),
     BotCommand(command="archive", description="Архивировать сессию"),
     BotCommand(command="voice", description="Озвучка ответов on|off"),
+    BotCommand(command="skills", description="Доступные скиллы"),
+    BotCommand(command="stop", description="Завершить активный скилл"),
     BotCommand(command="help", description="Справка"),
 ]
 

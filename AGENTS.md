@@ -304,6 +304,65 @@ monthly|yearly) + `interval`, `weekdays`, `times` ("HH:MM"), `month_days`
 участники текущей сессии скрыты — им уже видно) и «Удалить» (цикл по
 `DELETE /messages/{id}`).
 
+## Скиллы (skills/)
+
+Скилл — текст SKILL.md (agentskills.io: YAML-шапка `name`/`description` +
+Markdown-тело, формат Claude/Devin/Hermes), хранится в `skills`
+(миграция 0015). `owner_id IS NULL` — общий (`manage_skills`, `/admin` →
+«Скиллы», чекбоксы ролей → `role_ids`, пусто = все роли); `owner_id = user` —
+личный (`create_skills`, `/settings` → «Мои скиллы» или инструментом
+`save_skill`), виден только владельцу и перекрывает общий с тем же именем.
+Полный текст — источник истины; `name`/`description`/`aliases`/`triggers`/
+`argument-hint` денормализованы в колонки, неизвестные ключи шапки
+(`allowed-tools`, `metadata`…) сохраняются, но ни на что не влияют.
+Расширения шапки: `aliases` — кириллические /команды (`[\w-]`), `triggers` —
+фразы запуска (нормализация: lower, ё→е, целыми словами; ≥2 слов или ≥6
+символов). Зарезервированы: stop, skills, start, new, sessions, archive,
+voice, help. Файлы скилла — `skill_files` (только тексты ≤256 КБ, ≤30 шт.,
+скрипты не исполняются), читаются инструментом `read_skill_file`.
+
+Запуск в той сессии, где вызван (`skills/service.py` activate →
+`conv.settings["active_skill"]`, перечитывается на каждый ран; старт/конец —
+системный парт `skill_event`):
+- `/имя аргументы` — PWA, Telegram (в т.ч. группы: неизвестная команда
+  становится обычным сообщением, если `resolve()` нашёл скилл) и голос;
+- фраза-триггер — только если в сессии нет активного скилла;
+- модель — `use_skill` (каталог `[Скиллы]` в промпте, если инструмент разрешён).
+Снятие — `end_skill`, `/stop` (не создаёт Run), `DELETE /conversations/{cid}/skill`
+или крестик chip в шапке; удалённый/выключенный скилл снимается молча.
+Команда, пришедшая под локом рана, переочередивается с `wait=True`
+(`runtime.maybe_run` → `_is_skill_command`). `/имя` и `/stop` считаются
+обращением в `reply_mode=mention`.
+Подстановки в теле: `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N`, `${CLAUDE_SKILL_DIR}`
+→ `skill:<name>`; нет плейсхолдера — дописывается `ARGUMENTS: …`.
+Перед телом — `SKILL_COMPAT_PREAMBLE` (`skills/activation.py`): AskUserQuestion/
+clarify → `ask_user_question`, Task/delegate_task → `run_subagent` (пачка =
+несколько вызовов), Read/`skill_view`/`${CLAUDE_SKILL_DIR}` → `read_skill_file`,
+Bash/Edit/Write недоступны (правки кода — `delegate_coding_task`).
+
+Новые инструменты в `DYNAMIC_TOOLS` (не в `NAMED_MODEL_TOOLS`), гейтинг —
+`tools.allow/deny` роли; `save_skill` дополнительно требует `create_skills`.
+Роли с явным `tools.allow` новые имена не получают автоматически — включать
+вручную.
+
+`ask_user_question` — вопрос с вариантами (1–4 вопроса, ≤4 опций + «Другое»,
+`multi_select`). Инструмент кладёт парт `choice` в ответ и просит модель
+завершить ход; в PWA — карточка с кнопками, в TG — inline-клавиатура (callback
+`ch:{message_id}:{idx}`, только single-question single-select) либо нумерованный
+текст. Ответ — `POST …/messages/{id}/answer` → `skills/choices.py`
+`answer_choice`: user-сообщение с `choice_answer` + `message.updated` на исходное
+(`answered: true`) + новый ран. Свободный текст — тоже ответ.
+`run_subagent(goal, context, model=default|fast)` — вложенный Agent без истории
+(binding chat / chat_fast, токены в `ctx.usage`), инструменты = права роли минус
+`SUBAGENT_EXCLUDED` (чат-мутации, рекурсия, планировщик), глубина 1, до 5
+параллельно на ран, таймаут 300 с, ответ ≤8000 зн.
+
+REST: `GET /skills` (доступные), `/skills/mine` CRUD + `/import` + `/{id}/export`
++ `/files/{path}`, `/admin/skills` — то же с `role_ids`/`enabled`.
+Импорт `.md`/`.zip` (SKILL.md в корне или одной папке; не-UTF8 пропускается
+с отчётом), экспорт — `<name>/…`. Лимиты: SKILL.md ≤64 КБ, ≤100 личных,
+каталог ≤50 скиллов в промпте.
+
 ## Лог сессии и компакшен
 
 Ответы ассистента хранят полный лог прогона: `thinking` (с provider-подписями

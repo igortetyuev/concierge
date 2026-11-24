@@ -20,6 +20,7 @@ from concierge.channels.telegram import gateway as telegram_gateway
 from concierge.core.db import dispose_engine
 from concierge.memory import indexer as memory_indexer
 from concierge.schedule import worker as schedule_worker
+from concierge.skills.api import router as skills_router
 from concierge.ws import router as ws_router
 
 # Non-multipart bodies (JSON API) are small; multipart uploads are capped by
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(attachments_router)
     app.include_router(memory_router)
     app.include_router(schedule_router)
+    app.include_router(skills_router)
     app.include_router(telegram_router)
     app.include_router(metrics_router)
     app.include_router(ws_router)

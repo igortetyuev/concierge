@@ -13,6 +13,7 @@ import AdminCodeAgents from './AdminCodeAgents'
 import AdminTelegram from './AdminTelegram'
 import AdminJournal from './AdminJournal'
 import AdminVoices from './AdminVoices'
+import AdminSkills from './AdminSkills'
 
 type TabId =
   | 'users'
@@ -23,6 +24,7 @@ type TabId =
   | 'agents'
   | 'telegram'
   | 'voices'
+  | 'skills'
   | 'journal'
 
 const TABS: { id: TabId; label: string; perm: string }[] = [
@@ -34,6 +36,7 @@ const TABS: { id: TabId; label: string; perm: string }[] = [
   { id: 'agents', label: 'Код-агенты', perm: 'manage_code_agents' },
   { id: 'telegram', label: 'Telegram', perm: 'manage_users' },
   { id: 'voices', label: 'Голоса', perm: 'manage_users' },
+  { id: 'skills', label: 'Скиллы', perm: 'manage_skills' },
   { id: 'journal', label: 'Журнал', perm: 'manage_users' },
 ]
 
@@ -87,6 +90,7 @@ export default function AdminView() {
         {active === 'agents' && <AdminCodeAgents />}
         {active === 'telegram' && <AdminTelegram />}
         {active === 'voices' && <AdminVoices />}
+        {active === 'skills' && <AdminSkills />}
         {active === 'journal' && <AdminJournal />}
       </div>
     </div>

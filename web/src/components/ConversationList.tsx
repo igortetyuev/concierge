@@ -152,7 +152,7 @@ export default function ConversationList() {
 
   const isAdmin =
     me?.permissions['*'] === true ||
-    ['manage_users', 'manage_providers', 'manage_mcp', 'manage_code_agents'].some(
+    ['manage_users', 'manage_providers', 'manage_mcp', 'manage_code_agents', 'manage_skills'].some(
       (p) => me?.permissions[p] === true,
     )
 

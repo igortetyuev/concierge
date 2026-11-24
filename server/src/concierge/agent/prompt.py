@@ -49,6 +49,8 @@ async def system_prompt(
     conv: Conversation,
     member_names: list[str],
     memory_block: str | None = None,
+    skills_catalog: str | None = None,
+    active_skill: str | None = None,
 ) -> str:
     """Compose the system prompt once per run: base + role + user + context."""
     base = await settings_service.get_value(
@@ -90,6 +92,15 @@ async def system_prompt(
 
     if memory_block:
         chunks.append(f"[Память]\n{memory_block}")
+
+    if skills_catalog:
+        chunks.append(
+            f"[Скиллы]\n{skills_catalog}\n"
+            "Запуск: инструмент `use_skill` или /команда от пользователя."
+        )
+
+    if active_skill:
+        chunks.append(active_skill)
 
     return "\n\n".join(chunks)
 

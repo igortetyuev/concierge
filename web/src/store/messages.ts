@@ -107,6 +107,17 @@ export function applyMessageCreated(message: MessageOut): void {
   }
 }
 
+/** Replace a stored message in place (e.g. a choice part got answered). */
+export function applyMessageUpdated(message: MessageOut): void {
+  const list = $messages.get()[message.conversation_id]
+  if (!list?.some((m) => m.id === message.id)) return
+  patch(
+    $messages,
+    message.conversation_id,
+    list.map((m) => (m.id === message.id ? message : m)),
+  )
+}
+
 export function applyMessageDeleted(conversationId: number, messageId: number): void {
   const list = $messages.get()[conversationId]
   if (!list?.some((m) => m.id === messageId)) return
