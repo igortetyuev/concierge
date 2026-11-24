@@ -17,7 +17,7 @@ import { loadPromptHistory, pushPromptHistory } from '../lib/promptHistory'
 import { sendTyping } from '../lib/ws'
 import { $conversations } from '../store/conversations'
 import { applyMessageCreated, sendParts, sendMessage } from '../store/messages'
-import { $composerPrefill } from '../store/ui'
+import { $composerFocus, $composerPrefill } from '../store/ui'
 import { IconCamera, IconClose, IconMic, IconPaperclip, IconSend } from './icons'
 
 const TYPING_INTERVAL = 3000
@@ -96,6 +96,7 @@ export default function Composer({ convId }: { convId: number }) {
   const histIdxRef = useRef(-1)
   const draftRef = useRef('')
   const prefill = useStore($composerPrefill)
+  const focusReq = useStore($composerFocus)
   const conv = useStore($conversations).find((c) => c.id === convId)
   const [mention, setMention] = useState<{
     start: number
@@ -250,6 +251,13 @@ export default function Composer({ convId }: { convId: number }) {
     const t = setTimeout(() => setRecNotice(null), 4000)
     return () => clearTimeout(t)
   }, [recNotice])
+
+  // A just-created session pulls keyboard focus into the composer.
+  useEffect(() => {
+    if (focusReq !== convId) return
+    $composerFocus.set(null)
+    areaRef.current?.focus()
+  }, [focusReq, convId])
 
   // «Исправить и отправить заново» drops the transcript into the composer.
   useEffect(() => {
