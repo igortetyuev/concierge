@@ -53,6 +53,19 @@ triggers:
 Тело.
 """
 
+SKILL_MD_EPHEMERAL = """---
+name: school
+description: Школьная справка
+ephemeral: true
+aliases: [школа]
+triggers:
+  - домашка
+---
+
+# Школа
+Таблицы: school_grades.
+"""
+
 
 def _text_fn(out: str = "ок"):
     async def sf(messages: Any, agent_info: Any):
@@ -234,6 +247,79 @@ async def test_trigger_phrase_only_without_active(
         conv = await session.get(Conversation, cid)
         assert conv is not None
         assert conv.settings["active_skill"]["name"] == "shopping"
+
+
+async def test_ephemeral_slash_command(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    infos = await _use_function_model(monkeypatch, _text_fn("ок"))
+    user = await make_user("eph", "adult")
+    await _add_skill(user.id, SKILL_MD_EPHEMERAL)
+    token = await login(client, "eph")
+    cid = await _make_conv(client, token)
+
+    await _post_and_collect(client, token, cid, "/школа")
+    await get_runtime().wait_idle()
+    assert "Таблицы: school_grades." in infos[-1].instructions
+    assert "Скилл: school — на этот ответ" in infos[-1].instructions
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, cid)
+        assert conv is not None
+        assert "active_skill" not in (conv.settings or {})
+    msgs = await _messages(cid)
+    assert not [
+        p for m in msgs for p in m.parts if p.get("type") == "skill_event"
+    ]
+
+    # Nothing stays pinned: the next message gets no skill chunk.
+    await _post_and_collect(client, token, cid, "продолжим")
+    await get_runtime().wait_idle()
+    assert "school_grades" not in infos[-1].instructions
+
+
+async def test_ephemeral_trigger_phrase(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    infos = await _use_function_model(monkeypatch, _text_fn("ок"))
+    user = await make_user("epht", "adult")
+    await _add_skill(user.id, SKILL_MD_EPHEMERAL)
+    token = await login(client, "epht")
+    cid = await _make_conv(client, token)
+
+    await _post_and_collect(client, token, cid, "какая домашка на завтра")
+    await get_runtime().wait_idle()
+    assert "Таблицы: school_grades." in infos[-1].instructions
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, cid)
+        assert conv is not None
+        assert "active_skill" not in (conv.settings or {})
+    msgs = await _messages(cid)
+    assert not [
+        p for m in msgs for p in m.parts if p.get("type") == "skill_event"
+    ]
+
+
+async def test_ephemeral_use_skill_tool(
+    engine, client: httpx.AsyncClient
+) -> None:
+    await _add_provider(
+        "chat",
+        params={"call_tools": ["use_skill"], "custom_output_text": "ок"},
+    )
+    user = await make_user("ephtool", "adult")
+    await _add_skill(user.id, SKILL_MD_EPHEMERAL)
+    token = await login(client, "ephtool")
+    cid = await _make_conv(client, token)
+    await _post_and_collect(client, token, cid, "запусти скилл")
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, cid)
+        assert conv is not None
+        assert "active_skill" not in (conv.settings or {})
+    msgs = await _messages(cid)
+    assert not [
+        p for m in msgs for p in m.parts if p.get("type") == "skill_event"
+    ]
 
 
 async def test_unknown_command_is_plain_text(

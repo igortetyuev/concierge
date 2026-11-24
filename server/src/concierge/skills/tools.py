@@ -49,7 +49,9 @@ def make_use_skill_tool(names: list[str]) -> Callable[..., Any]:
         """Activate a skill in this session (a /command or trigger phrase).
 
         The skill's instructions apply to this and following replies until
-        `end_skill`. Call with the name from the [Скиллы] catalog.
+        `end_skill`. Ephemeral skills are one-shot: their instructions apply
+        to this reply only and nothing stays pinned. Call with the name from
+        the [Скиллы] catalog.
         """
         async with get_sessionmaker()() as session:
             conv = await session.get(Conversation, ctx.deps.conversation_id)
@@ -65,6 +67,13 @@ def make_use_skill_tool(names: list[str]) -> Callable[..., Any]:
             body = render_body(
                 body_of(skill.content), arguments, skill.name
             )
+            if skill.ephemeral:
+                return {
+                    "ok": True,
+                    "skill": skill.name,
+                    "ephemeral": True,
+                    "instructions": f"{SKILL_COMPAT_PREAMBLE}\n\n{body}",
+                }
             msg = await service.activate(
                 session, conv, skill, arguments, user
             )

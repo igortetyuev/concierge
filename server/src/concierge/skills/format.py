@@ -44,6 +44,7 @@ class SkillDoc:
     aliases: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
     argument_hint: str | None = None
+    ephemeral: bool = False
     body: str = ""
     content: str = ""
 
@@ -121,12 +122,16 @@ def parse_skill_md(text: str) -> SkillDoc:
         _validate_trigger(trigger)
 
     hint = meta.get("argument-hint") or meta.get("argument_hint") or None
+    ephemeral = meta.get("ephemeral", False)
+    if not isinstance(ephemeral, bool):
+        raise SkillFormatError("ephemeral должен быть true или false")
     return SkillDoc(
         name=name,
         description=description,
         aliases=[a.lower() for a in aliases],
         triggers=triggers,
         argument_hint=str(hint)[:256] if hint else None,
+        ephemeral=ephemeral,
         body=body,
         content=text,
     )

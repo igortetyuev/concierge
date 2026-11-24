@@ -142,18 +142,24 @@ class AgentRuntime:
                     )
                 return
             activated = False
+            # An ephemeral skill (/command, trigger or use_skill) applies to
+            # this run only: no `active_skill` state, no `skill_event`.
+            ephemeral_state: tuple[Any, str] | None = None
             if cmd is not None and (
                 skill := await skill_service.resolve(session, user, cmd[1])
             ) is not None:
-                msg = await skill_service.activate(
-                    session, conv, skill, cmd[2], user
-                )
-                await self._emit(
-                    "message.created",
-                    conv.id,
-                    {"message": _message_dict(msg)},
-                )
                 activated = True
+                if skill.ephemeral:
+                    ephemeral_state = (skill, cmd[2])
+                else:
+                    msg = await skill_service.activate(
+                        session, conv, skill, cmd[2], user
+                    )
+                    await self._emit(
+                        "message.created",
+                        conv.id,
+                        {"message": _message_dict(msg)},
+                    )
             if (
                 conv.reply_mode == "mention"
                 and not activated
@@ -194,20 +200,27 @@ class AgentRuntime:
                     if s.triggers and skill_format.match_trigger(
                         s.triggers, plain
                     ):
-                        msg = await skill_service.activate(
-                            session, conv, s, "", user
-                        )
-                        await self._emit(
-                            "message.created",
-                            conv.id,
-                            {"message": _message_dict(msg)},
-                        )
-                        active = (s, "")
+                        if s.ephemeral:
+                            ephemeral_state = (s, "")
+                        else:
+                            msg = await skill_service.activate(
+                                session, conv, s, "", user
+                            )
+                            await self._emit(
+                                "message.created",
+                                conv.id,
+                                {"message": _message_dict(msg)},
+                            )
+                            active = (s, "")
                         break
             active_skill_chunk = (
-                skill_activation.active_skill_chunk(*active)
-                if active is not None
-                else None
+                skill_activation.ephemeral_skill_chunk(*ephemeral_state)
+                if ephemeral_state is not None
+                else (
+                    skill_activation.active_skill_chunk(*active)
+                    if active is not None
+                    else None
+                )
             )
             memory_block = await memory_service.retrieve_context(
                 session, user, conv, trigger_text

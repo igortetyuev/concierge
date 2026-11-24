@@ -317,8 +317,10 @@ Markdown-тело, формат Claude/Devin/Hermes), хранится в `skill
 (`allowed-tools`, `metadata`…) сохраняются, но ни на что не влияют.
 Расширения шапки: `aliases` — кириллические /команды (`[\w-]`), `triggers` —
 фразы запуска (нормализация: lower, ё→е, целыми словами; ≥2 слов или ≥6
-символов). Зарезервированы: stop, skills, start, new, sessions, archive,
-voice, help. Файлы скилла — `skill_files` (только тексты ≤256 КБ, ≤30 шт.,
+символов), `ephemeral: true` — разовый скилл-справка: тело действует только
+на ран вызова (`active_skill` не пишется, `skill_event` не постится,
+снимать нечего; чанк `[Скилл: name — на этот ответ]`). Зарезервированы:
+stop, skills, start, new, sessions, archive, voice, help. Файлы скилла — `skill_files` (только тексты ≤256 КБ, ≤30 шт.,
 скрипты не исполняются), читаются инструментом `read_skill_file`.
 
 Запуск в той сессии, где вызван (`skills/service.py` activate →
@@ -416,8 +418,10 @@ audit_log/memory_items/telegram_messages + вьюхи `agent_messages`
 (JSON-строки → `sandbox.<table>`, append/replace), `analytics_load_attachment`
 (csv/tsv/json/jsonl из attachments/blob'ов → `sandbox.<table>`),
 `analytics_import_star` (нормализация в звёздную схему, см. ниже). Инструкция
-агенту — в глобальной настройке `agent.system_prompt` (блок про аналитику).
-Гейтинг — `mcp_servers` в ролях (admin/adult: `*`, child/guest: пусто).
+агенту — общий скилл `analytics` (ephemeral: справка на один ран, каталог +
+триггеры/«аналитика»).
+Гейтинг — `mcp_servers` в ролях (admin/adult/speaker: `*`,
+child: `["gismeteo", "livingroom", "analytics"]`, guest: `["livingroom"]`).
 
 `analytics_import_star` — опциональная звёздная схема вместо flat-таблицы:
 вызывающий перечисляет `dimensions` (категориальные колонки), для каждой
@@ -438,7 +442,8 @@ start_time, subject_odd/even — чередование по чётности IS
 `school_homework` (date — на какой день задано, text, materials jsonb),
 `school_grades` (mark/value/weight/work_type/…, class_stats jsonb),
 `school_quarters`, `school_meta` (generated_at/loaded_at — свежесть).
-Схема описана агенту в `agent.system_prompt` (блок аналитики).
+Схема описана агенту в общем скилле `school` (ephemeral, триггеры
+«домашка»/«оценки»/… и /школа).
 
 ## MCP-серверы с браузерным доступом (ozon, browserdata)
 

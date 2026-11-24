@@ -51,3 +51,12 @@ def active_skill_chunk(skill: Skill, args: str) -> str:
     return (
         f"[Активный скилл: {skill.name}]\n{SKILL_COMPAT_PREAMBLE}\n\n{body}"
     )
+
+
+def ephemeral_skill_chunk(skill: Skill, args: str) -> str:
+    """One-shot `[Скилл]` chunk for `ephemeral` skills: this run only."""
+    body = render_body(body_of(skill.content), args, skill.name)
+    return (
+        f"[Скилл: {skill.name} — на этот ответ]\n"
+        f"{SKILL_COMPAT_PREAMBLE}\n\n{body}"
+    )

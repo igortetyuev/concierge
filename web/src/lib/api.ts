@@ -308,6 +308,7 @@ export interface SkillOut {
   aliases: string[]
   triggers: string[]
   argument_hint: string | null
+  ephemeral: boolean
   personal: boolean
   enabled: boolean
   version: number

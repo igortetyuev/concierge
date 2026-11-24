@@ -91,6 +91,13 @@ async def test_format_parse_valid(engine) -> None:
     assert "allowed-tools" in doc.content
 
 
+async def test_format_ephemeral_flag(engine) -> None:
+    assert skill_format.parse_skill_md(SKILL_MD).ephemeral is False
+    assert skill_format.parse_skill_md(_md(ephemeral=True)).ephemeral is True
+    with pytest.raises(skill_format.SkillFormatError):
+        skill_format.parse_skill_md(_md(ephemeral='"yes"'))
+
+
 async def test_format_rejections(engine) -> None:
     for bad in (
         _md(name=""),
@@ -190,6 +197,15 @@ async def test_service_visibility_and_shadowing(engine) -> None:
     assert names_admin["shopping"].description == "личный вариант"
     assert "kidonly" in names_kid and "kidonly" not in names_adult
     assert "shopping" in names_adult and "shopping" in names_kid
+
+
+async def test_service_ephemeral_denorm(engine) -> None:
+    user = await make_user("skeph", "adult")
+    async with db.get_sessionmaker()() as session:
+        skill = await _create(session, user.id, _md(ephemeral=True))
+        assert skill.ephemeral is True
+        skill = await service.update_skill(session, skill, content=SKILL_MD)
+        assert skill.ephemeral is False
 
 
 async def test_service_resolve_and_collisions(engine) -> None:

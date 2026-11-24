@@ -55,6 +55,9 @@ class Skill(Base):
     aliases: Mapped[list[str]] = mapped_column(JSONBType, default=list)
     triggers: Mapped[list[str]] = mapped_column(JSONBType, default=list)
     argument_hint: Mapped[str | None] = mapped_column(String(256))
+    # Ephemeral skills never pin `active_skill`: their body applies only to
+    # the run that invoked them, without a `skill_event` in the feed.
+    ephemeral: Mapped[bool] = mapped_column(default=False)
     content: Mapped[str] = mapped_column(Text)
     # Role ids allowed to see a shared skill; [] or ["*"] = all roles.
     role_ids: Mapped[list[Any]] = mapped_column(JSONBType, default=list)

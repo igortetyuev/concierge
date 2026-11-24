@@ -137,6 +137,7 @@ def _apply_doc(skill: Skill, doc: SkillDoc) -> None:
     skill.aliases = doc.aliases
     skill.triggers = doc.triggers
     skill.argument_hint = doc.argument_hint
+    skill.ephemeral = doc.ephemeral
     skill.content = doc.content
 
 

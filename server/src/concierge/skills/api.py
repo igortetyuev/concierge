@@ -44,6 +44,7 @@ class SkillOut(BaseModel):
     aliases: list[str]
     triggers: list[str]
     argument_hint: str | None
+    ephemeral: bool
     personal: bool
     enabled: bool
     version: int
@@ -61,6 +62,7 @@ class SkillOut(BaseModel):
             aliases=s.aliases,
             triggers=s.triggers,
             argument_hint=s.argument_hint,
+            ephemeral=s.ephemeral,
             personal=s.owner_id == user.id,
             enabled=s.enabled,
             version=s.version,
