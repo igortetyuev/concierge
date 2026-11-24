@@ -13,7 +13,6 @@ import {
 import { subscribe } from '../lib/ws'
 import { $user } from '../store/auth'
 import { refreshConversation } from '../store/conversations'
-import { $composerFocus } from '../store/ui'
 import { IconMic } from './icons'
 
 type Phase = 'idle' | 'recording' | 'sending'
@@ -155,7 +154,6 @@ export default function VoiceQuick() {
         } catch {
           /* list resync covers it */
         }
-        $composerFocus.set(resp.conversation_id)
         navigate(`/c/${resp.conversation_id}`)
       }
       setPhase('idle')

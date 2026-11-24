@@ -6,7 +6,6 @@ import { useStore } from '@nanostores/react'
 import { createGroup, loadUsers } from '../store/conversations'
 import { $users } from '../store/conversations'
 import { $user } from '../store/auth'
-import { $composerFocus } from '../store/ui'
 import { IconClose } from './icons'
 
 export default function NewGroupDialog({ onClose }: { onClose: () => void }) {
@@ -38,7 +37,6 @@ export default function NewGroupDialog({ onClose }: { onClose: () => void }) {
     try {
       const conv = await createGroup(title.trim(), [...picked])
       onClose()
-      $composerFocus.set(conv.id)
       navigate(`/c/${conv.id}`)
     } catch {
       setError('Не удалось создать группу')

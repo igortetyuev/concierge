@@ -16,7 +16,6 @@ import {
   createPersonal,
 } from '../store/conversations'
 import { messageText } from '../store/messages'
-import { $composerFocus } from '../store/ui'
 import NewGroupDialog from './NewGroupDialog'
 import VoiceQuick from './VoiceQuick'
 import { IconBook, IconChat, IconChevron, IconLogout, IconPlus, IconSearch, IconSettings, IconTool, IconUsers } from './icons'
@@ -104,7 +103,6 @@ export default function ConversationList() {
 
   async function newPersonal() {
     const conv = await createPersonal()
-    $composerFocus.set(conv.id)
     navigate(`/c/${conv.id}`)
   }
 
