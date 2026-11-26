@@ -2270,3 +2270,25 @@ body.sidebar-resizing {
 .checklist-note {
   font-size: 0.78rem;
 }
+
+.checklist-followups {
+  max-width: 560px;
+}
+
+.checklist-followup {
+  margin: 6px 0;
+}
+
+.checklist-followup-answer {
+  margin-bottom: 4px;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  white-space: pre-wrap;
+}
+
+.checklist-followup-pending {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-style: italic;
+}

@@ -136,6 +136,29 @@ class AgentRuntime:
             if user is None or conv.status != "active":
                 return
             hidden_reply = trigger.hidden and _is_checklist_reply(trigger.parts)
+            # Hidden checklist-triggered runs fold their reply into the
+            # originating checklist part's `followups` (the card's
+            # "рассуждение") instead of a visible chat bubble.
+            cl_ref: tuple[int, str, Any] | None = None
+            if hidden_reply:
+                cl_answer = next(
+                    (
+                        p.get("checklist_answer")
+                        for p in trigger.parts
+                        if isinstance(p.get("checklist_answer"), dict)
+                    ),
+                    None,
+                )
+                if (
+                    cl_answer is not None
+                    and isinstance(cl_answer.get("message_id"), int)
+                    and cl_answer.get("checklist_id")
+                ):
+                    cl_ref = (
+                        int(cl_answer["message_id"]),
+                        str(cl_answer["checklist_id"]),
+                        cl_answer.get("n"),
+                    )
             # /stop never creates a run: it only unpins the active skill.
             cmd = skill_activation.parse_command(trigger.parts)
             if cmd is not None and cmd[0] == "stop":
@@ -586,16 +609,19 @@ class AgentRuntime:
             await self._finish(
                 run_id, conv.id, "failed", error=str(exc), quiet=hidden_reply
             )
+            error_parts = [*run_parts, {"type": "text", "text": ERROR_TEXT}]
             await self._save_reply(
                 session_maker,
                 conv.id,
                 run_id,
-                [*run_parts, {"type": "text", "text": ERROR_TEXT}],
+                error_parts,
                 deps.documents,
                 deps.choices,
                 deps.checklists,
                 hidden=hidden_reply,
             )
+            if hidden_reply:
+                await self._embed_checklist_followup(conv.id, cl_ref, error_parts)
             return
 
         await self._finish(
@@ -621,7 +647,18 @@ class AgentRuntime:
             deps.checklists,
             hidden=hidden_reply,
         )
-        if not hidden_reply:
+        if hidden_reply:
+            await self._embed_checklist_followup(
+                conv.id,
+                cl_ref,
+                [
+                    *stored_parts,
+                    *(deps.documents or []),
+                    *(deps.choices or []),
+                    *(deps.checklists or []),
+                ],
+            )
+        else:
             await self._ensure_title(conv.id, user, trigger.parts)
             await self._maybe_tts_reply(conv.id, user, output)
 
@@ -984,6 +1021,72 @@ class AgentRuntime:
                 )
             )
         memory_indexer.kick()
+
+    async def _embed_checklist_followup(
+        self,
+        conversation_id: int,
+        cl_ref: tuple[int, str, Any] | None,
+        parts: list[dict[str, Any]],
+    ) -> None:
+        """Fill the pending `followups` entry of the originating checklist
+        part with a compact copy of the hidden reply, so the exchange is
+        visible inside the card's "рассуждение" instead of the chat feed."""
+        from concierge.skills.checklists import compact_followup_parts
+
+        if cl_ref is None:
+            return
+        message_id, checklist_id, n = cl_ref
+        compact = compact_followup_parts(parts)
+        if not compact:
+            return
+        async with get_sessionmaker()() as session:
+            msg = (
+                await session.execute(
+                    select(Message)
+                    .where(Message.id == message_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if msg is None or msg.conversation_id != conversation_id:
+                return
+            idx = next(
+                (
+                    i
+                    for i, p in enumerate(msg.parts)
+                    if p.get("type") == "checklist"
+                    and p.get("checklist_id") == checklist_id
+                ),
+                None,
+            )
+            if idx is None:
+                return
+            part = dict(msg.parts[idx])
+            followups = [dict(f) for f in part.get("followups") or []]
+            entry = next(
+                (
+                    f
+                    for f in followups
+                    if f.get("n") == n and f.get("parts") is None
+                ),
+                None,
+            )
+            if entry is None:
+                entry = next(
+                    (f for f in followups if f.get("parts") is None), None
+                )
+            if entry is None:
+                return
+            entry["parts"] = compact
+            part["followups"] = followups
+            msg.parts = [*msg.parts[:idx], part, *msg.parts[idx + 1 :]]
+            out = _message_dict(msg)
+            await session.commit()
+        await self._hub.publish(
+            ChannelEvent(
+                "message.updated", conversation_id, {"message": out}
+            )
+        )
 
     async def _maybe_tts_reply(
         self, conversation_id: int, user: User, text: str

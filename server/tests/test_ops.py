@@ -87,6 +87,18 @@ async def test_runs_journal(engine, client: httpx.AsyncClient) -> None:
     assert run["usage"]["output_tokens"] == 20
 
 
+async def test_prompt_preview_names_user_without_fragment(
+    engine, client: httpx.AsyncClient
+) -> None:
+    admin = await make_user("adminnofrag", "admin")
+    token = await login(client, "adminnofrag")
+    resp = await client.get(
+        f"/admin/prompt-preview?user_id={admin.id}", headers=auth(token)
+    )
+    assert resp.status_code == 200
+    assert f"[Пользователь: {admin.display_name}]" in resp.json()["prompt"]
+
+
 async def test_prompt_preview(engine, client: httpx.AsyncClient) -> None:
     admin = await make_user("admin", "admin")
     async with get_sessionmaker()() as session:
@@ -103,6 +115,7 @@ async def test_prompt_preview(engine, client: httpx.AsyncClient) -> None:
     text = resp.json()["prompt"]
     assert "консьерж" in text.lower()
     assert "[Роль: admin]" in text
+    assert "[Пользователь: Admin]" in text
     assert "любит чай" in text
 
     missing = await client.get(

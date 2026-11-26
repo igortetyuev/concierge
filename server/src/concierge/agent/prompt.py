@@ -61,10 +61,11 @@ async def system_prompt(
 
     if user.role.prompt_fragment:
         chunks.append(f"[Роль: {user.role.name}]\n{user.role.prompt_fragment}")
+    display_name = (user.display_name or "").strip() or user.username
+    user_chunk = f"[Пользователь: {display_name}]"
     if user.prompt_fragment:
-        chunks.append(
-            f"[Пользователь: {user.display_name}]\n{user.prompt_fragment}"
-        )
+        user_chunk += f"\n{user.prompt_fragment}"
+    chunks.append(user_chunk)
 
     kind = "групповая" if conv.kind == "group" else "личная"
     ctx = f"[Сессия] вид: {kind}"

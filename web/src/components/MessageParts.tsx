@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { apiClient, fetchAttachmentObjectUrl } from '../lib/api'
@@ -739,13 +739,74 @@ export default function MessageParts({
           )
         }
         if (p.type === 'checklist') {
+          // Submissions to this checklist don't appear in the feed: the
+          // hidden exchange is embedded into the part's `followups` and
+          // shown in the card's own "рассуждение" details.
+          const followups =
+            (p.followups as
+              | {
+                  n?: number
+                  answer?: string
+                  parts?: MessagePart[] | null
+                }[]
+              | undefined) ?? []
           return (
-            <ChecklistPart
-              key={i}
-              part={p}
-              convId={convId}
-              messageId={messageId}
-            />
+            <Fragment key={i}>
+              <ChecklistPart
+                part={p}
+                convId={convId}
+                messageId={messageId}
+              />
+              {followups.length > 0 && (
+                <details className="part-thinking checklist-followups">
+                  <summary className="muted">рассуждение</summary>
+                  {followups.map((f, fi) => (
+                    <div key={f.n ?? fi} className="checklist-followup">
+                      <div className="checklist-followup-answer muted">
+                        {String(f.answer ?? '')}
+                      </div>
+                      {f.parts == null ? (
+                        <span className="checklist-followup-pending muted">
+                          <span className="spinner" /> обрабатывается…
+                        </span>
+                      ) : (
+                        // Compact parts (checklists.compact_followup_parts)
+                        // render flat — the outer details already is the
+                        // collapsible "рассуждение" container.
+                        f.parts.map((fp, pi) => {
+                          if (fp.type === 'thinking') {
+                            return (
+                              <Markdown
+                                key={pi}
+                                text={String(fp.content ?? '')}
+                              />
+                            )
+                          }
+                          if (fp.type === 'tool') {
+                            return (
+                              <ToolChip
+                                key={pi}
+                                name={String(fp.name ?? 'tool')}
+                                status={fp.status as string | undefined}
+                              />
+                            )
+                          }
+                          if (fp.type === 'text') {
+                            return (
+                              <Markdown
+                                key={pi}
+                                text={String(fp.text ?? '')}
+                              />
+                            )
+                          }
+                          return null
+                        })
+                      )}
+                    </div>
+                  ))}
+                </details>
+              )}
+            </Fragment>
           )
         }
         if (p.type === 'compaction') {

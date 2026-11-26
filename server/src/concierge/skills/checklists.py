@@ -30,6 +30,41 @@ def render_state(part: dict[str, Any]) -> str:
     return f"Отмечено в «{title}»: {marks}"
 
 
+def compact_followup_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Display copy of a hidden follow-up reply embedded in the checklist
+    part: text and thinking verbatim, tool calls collapsed to chips (full
+    args/returns stay in the hidden reply row only)."""
+    failed = {
+        str(p.get("tool_call_id"))
+        for p in parts
+        if p.get("type") == "tool_return"
+        and (
+            p.get("retry") is True
+            or p.get("outcome") in ("failed", "denied")
+        )
+    }
+    out: list[dict[str, Any]] = []
+    for p in parts:
+        ptype = p.get("type")
+        if ptype == "text" and p.get("text"):
+            out.append({"type": "text", "text": str(p["text"])})
+        elif ptype == "thinking" and p.get("content"):
+            out.append({"type": "thinking", "content": str(p["content"])})
+        elif ptype == "tool_call":
+            out.append(
+                {
+                    "type": "tool",
+                    "name": str(p.get("name") or "tool"),
+                    "status": (
+                        "error"
+                        if str(p.get("tool_call_id")) in failed
+                        else "done"
+                    ),
+                }
+            )
+    return out
+
+
 async def publish_answer(conv_id: int, msg: Message, reply: Message) -> None:
     """Fan out the part update + answer message and schedule the next run.
 
@@ -113,15 +148,28 @@ async def submit_checklist(
         new_part = part
     else:
         submissions += 1
+        new_items = [
+            {**it, "checked": str(it.get("id")) in wanted} for it in items
+        ]
+        # The follow-up exchange (this answer + the agent's reply) is folded
+        # into the card's "рассуждение": a pending entry appears right away,
+        # the runtime fills its `parts` when the hidden reply run finishes.
+        followups = [
+            *(part.get("followups") or []),
+            {
+                "n": submissions,
+                "answer": render_state({**part, "items": new_items}),
+                "at": utcnow().isoformat(timespec="seconds"),
+                "parts": None,
+            },
+        ]
         new_part = {
             **part,
-            "items": [
-                {**it, "checked": str(it.get("id")) in wanted}
-                for it in items
-            ],
+            "items": new_items,
             "submissions": submissions,
             "submitted_by": user.id,
             "submitted_at": utcnow().isoformat(timespec="seconds"),
+            "followups": followups,
         }
         msg.parts = [new_part if p is part else p for p in msg.parts]
     reply, created = await conversations.post_message(
@@ -135,6 +183,7 @@ async def submit_checklist(
                 "checklist_answer": {
                     "message_id": message_id,
                     "checklist_id": checklist_id,
+                    "n": submissions,
                     "skill": part.get("skill"),
                     "skill_id": part.get("skill_id"),
                     "items": [

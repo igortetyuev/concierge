@@ -229,7 +229,7 @@ async def test_checklist_flow(
     engine, client: httpx.AsyncClient, monkeypatch
 ) -> None:
     calls = {"n": 0}
-    _, requests = await _bind_fn(
+    infos, requests = await _bind_fn(
         monkeypatch, _cl_fn(calls, items=ITEMS, title="Домашка")
     )
     user = await make_user("cl", "adult")
@@ -305,23 +305,37 @@ async def test_checklist_flow(
     assert followup.author_kind == "assistant"
     assert followup.hidden is True
 
+    # The hidden exchange is folded into the checklist part itself: the
+    # submit left a pending followups entry, the finished run filled it
+    # with a compact copy of the reply (the card's "рассуждение").
+    assert ans["n"] == 1
+    assert len(cl["followups"]) == 1
+    entry = cl["followups"][0]
+    assert entry["n"] == 1 and entry["at"]
+    assert "Отмечено в «Домашка»" in entry["answer"]
+    assert entry["parts"] == [{"type": "text", "text": "принято"}]
+
     visible = await client.get(
         f"/conversations/{cid}/messages", headers=auth(token)
     )
     assert visible.status_code == 200
     assert [m["id"] for m in visible.json()] == [initial["id"], reply.id]
     assert all(m["hidden"] is False for m in visible.json())
+    # The submission text now lives in the visible checklist part (inside
+    # followups), so search finds the checklist message — but never the
+    # hidden answer/reply rows themselves.
     found = await client.get(
         "/search", params={"q": "Отмечено"}, headers=auth(token)
     )
     assert found.status_code == 200
-    assert found.json() == []
+    assert [m["id"] for m in found.json()] == [reply.id]
 
     texts = _prompt_texts(requests[-1])
     joined = "\n".join(texts)
     assert "[чек-лист:" in joined
     assert '"ru": true' in joined and '"math": false' in joined
     assert '"changed": ["ru", "math", "3"]' in joined
+    assert f"[Пользователь: {user.display_name}]" in infos[-1].instructions
 
 
 async def test_checklist_submit_hides_realtime_traffic(
@@ -404,6 +418,9 @@ async def test_checklist_resubmit(
     cl = next(p for p in orig.parts if p["type"] == "checklist")
     assert cl["submissions"] == 2
     assert all(i["checked"] for i in cl["items"])
+    # Each submission got its own followups entry, filled in order.
+    assert [f["n"] for f in cl["followups"]] == [1, 2]
+    assert all(f["parts"] for f in cl["followups"])
     answers = [
         m for m in msgs if any(p.get("checklist_answer") for p in m.parts)
     ]
@@ -764,3 +781,30 @@ async def test_checklist_history_render() -> None:
         [{"type": "text", "text": "вот список"}, part]
     )
     assert msgs  # text part survived; checklist part skipped
+
+
+async def test_compact_followup_parts() -> None:
+    from concierge.skills.checklists import compact_followup_parts
+
+    parts = [
+        {"type": "thinking", "content": "думаю", "signature": "sig"},
+        {
+            "type": "tool_call",
+            "name": "web_search",
+            "tool_call_id": "t1",
+            "args": {"q": "x" * 5000},
+        },
+        {"type": "tool_return", "tool_call_id": "t1", "content": "y" * 5000},
+        {"type": "tool_call", "name": "bad_tool", "tool_call_id": "t2"},
+        {"type": "tool_return", "tool_call_id": "t2", "retry": True},
+        {"type": "text", "text": "готово"},
+        {"type": "text", "text": ""},
+        {"type": "image", "attachment_id": 5},
+    ]
+    assert compact_followup_parts(parts) == [
+        {"type": "thinking", "content": "думаю"},
+        {"type": "tool", "name": "web_search", "status": "done"},
+        {"type": "tool", "name": "bad_tool", "status": "error"},
+        {"type": "text", "text": "готово"},
+    ]
+    assert compact_followup_parts([]) == []
