@@ -451,6 +451,27 @@ async def test_use_skill_tool_activates(
     assert events and events[0]["action"] == "start"
 
 
+async def test_use_skill_records_skill_on_deps(engine) -> None:
+    """use_skill marks deps so interactive parts it produces carry the
+    skill (ephemeral ones have no pinned state to recover it from)."""
+    from concierge.conversations import service as conv_service
+    from concierge.skills.tools import make_use_skill_tool
+
+    user = await make_user("usdep", "adult")
+    skill = await _add_skill(user.id, SKILL_MD_EPHEMERAL)
+    async with db.get_sessionmaker()() as session:
+        conv = await conv_service.create_conversation(
+            session, user, "personal", "", []
+        )
+        assert conv is not None
+        cid = conv.id
+    deps = ToolDeps(user_id=user.id, conversation_id=cid)
+    tool = make_use_skill_tool(["school"])
+    res = await tool(SimpleNamespace(deps=deps), name="school")  # type: ignore[arg-type]
+    assert res["ok"] is True and res["ephemeral"] is True
+    assert deps.skill_name == "school" and deps.skill_id == skill.id
+
+
 async def test_read_skill_file_tool(engine) -> None:
     from concierge.skills.tools import read_skill_file
 
@@ -503,6 +524,7 @@ async def test_save_skill_permission_and_call(engine) -> None:
         "read_skill_file",
         "save_skill",
         "ask_user_question",
+        "show_checklist",
         "run_subagent",
     ):
         assert name not in tools.NAMED_MODEL_TOOLS
@@ -564,6 +586,7 @@ async def test_choice_flow(engine, client: httpx.AsyncClient, monkeypatch) -> No
     assert reply.author_kind == "assistant"
     choice = next(p for p in reply.parts if p["type"] == "choice")
     assert choice["answered"] is False and choice["questions"] == questions
+    assert choice["skill"] is None  # no skill driving this run
     choice_id = choice["choice_id"]
 
     resp = await client.post(
@@ -598,6 +621,81 @@ async def test_choice_flow(engine, client: httpx.AsyncClient, monkeypatch) -> No
         headers=auth(token),
     )
     assert resp.status_code == 409
+
+
+async def test_choice_answer_reactivates_ephemeral_and_wakes_mention(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """A choice asked under an ephemeral skill records it; answering
+    re-injects the skill for the follow-up run and wakes a mention group."""
+    questions = [
+        {
+            "question": "Подтвердить?",
+            "options": [{"label": "да"}, {"label": "нет"}],
+        }
+    ]
+
+    import json as _json
+
+    calls = {"n": 0}
+
+    async def fn(messages: Any, agent_info: Any):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield DeltaToolCalls(
+                {
+                    0: DeltaToolCall(
+                        name="ask_user_question",
+                        json_args=_json.dumps({"questions": questions}),
+                        tool_call_id="c1",
+                    )
+                }
+            )
+        else:
+            yield "принято"
+
+    infos = await _use_function_model(monkeypatch, fn)
+    await make_user("cqown", "adult")
+    member = await make_user("cqmem", "adult")
+    skill = await _add_skill(member.id, SKILL_MD_EPHEMERAL)
+    token = await login(client, "cqown")
+    resp = await client.post(
+        "/conversations",
+        json={"kind": "group", "title": "g", "member_ids": [member.id]},
+        headers=auth(token),
+    )
+    cid = resp.json()["id"]
+    mtoken = await login(client, "cqmem")
+
+    # Group reply_mode is 'mention': the /command run is allowed through.
+    await _post_and_collect(client, mtoken, cid, "/школа")
+    await get_runtime().wait_idle()
+    msgs = await _messages(cid)
+    reply = msgs[-1]
+    choice = next(p for p in reply.parts if p["type"] == "choice")
+    assert choice["skill"] == "school" and choice["skill_id"] == skill.id
+
+    resp = await client.post(
+        f"/conversations/{cid}/messages/{reply.id}/answer",
+        json={
+            "choice_id": choice["choice_id"],
+            "answers": [{"selected": ["да"], "other": None}],
+        },
+        headers=auth(mtoken),
+    )
+    assert resp.status_code == 201, resp.text
+    await get_runtime().wait_idle()
+
+    # The answer alone (no mention) produced a second run that re-injected
+    # the ephemeral skill's instructions.
+    assert len(await _runs(cid)) == 2
+    assert "school_grades" in infos[-1].instructions
+    msgs = await _messages(cid)
+    answer = next(
+        m for m in msgs if any(p.get("choice_answer") for p in m.parts)
+    )
+    snap = answer.parts[0]["choice_answer"]
+    assert snap["skill"] == "school" and snap["skill_id"] == skill.id
 
 
 async def test_ask_user_question_twice_and_history(engine) -> None:

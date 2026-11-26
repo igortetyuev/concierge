@@ -51,6 +51,12 @@ class ToolDeps:
     documents: list[dict[str, Any]] = field(default_factory=list)
     # `choice` parts appended to the reply (ask_user_question).
     choices: list[dict[str, Any]] = field(default_factory=list)
+    # `checklist` parts appended to the reply (show_checklist).
+    checklists: list[dict[str, Any]] = field(default_factory=list)
+    # Name/id of the skill driving this run (pinned or ephemeral), if any;
+    # interactive parts record them so their answers can re-apply it.
+    skill_name: str | None = None
+    skill_id: int | None = None
     # run_subagent recursion guard + per-run parallelism cap (5).
     subagent_depth: int = 0
     subagent_slots: asyncio.Semaphore | None = None
@@ -721,6 +727,8 @@ async def ask_user_question(
             "choice_id": uuid4().hex,
             "questions": [q.model_dump(mode="json") for q in questions],
             "answered": False,
+            "skill": ctx.deps.skill_name,
+            "skill_id": ctx.deps.skill_id,
         }
     )
     return {
@@ -728,6 +736,95 @@ async def ask_user_question(
         "note": (
             "вопрос показан пользователю; заверши ход коротко, не повторяя "
             "варианты — ответ придёт следующим сообщением"
+        ),
+    }
+
+
+CHECKLIST_ITEMS_MAX = 50
+CHECKLIST_COLUMNS_MAX = 6
+CHECKLIST_ID_MAX = 64
+
+
+class ChecklistItem(BaseModel):
+    """One checklist row; `cells` are the table cells for table mode."""
+
+    id: str = ""
+    text: str
+    cells: list[str] = []
+    checked: bool = False
+
+
+async def show_checklist(
+    ctx: RunContext[ToolDeps],
+    items: list[ChecklistItem],
+    title: str = "",
+    columns: list[str] | None = None,
+    submit_label: str = "Отправить",
+) -> dict[str, Any]:
+    """Show the user an interactive checklist with checkboxes.
+
+    1-50 items. List mode is the default; pass `columns` (up to 6) plus
+    `cells` on every item for table mode — the two modes can't mix. `id`
+    defaults to "1".."n". In table mode `text` is still required: it is the
+    one-line summary used where tables can't render (Telegram, history,
+    render_state). The user ticks boxes and presses `submit_label`;
+    the checked state arrives as the next user message — finish your turn
+    briefly after calling, don't list the items again.
+    """
+    if ctx.deps.checklists:
+        return {"error": "already showed a checklist this run"}
+    if not items or len(items) > CHECKLIST_ITEMS_MAX:
+        return {"error": "1-50 items required"}
+    cols = [str(c) for c in columns] if columns else []
+    if len(cols) > CHECKLIST_COLUMNS_MAX:
+        return {"error": "at most 6 columns"}
+    seen: set[str] = set()
+    out_items: list[dict[str, Any]] = []
+    for i, it in enumerate(items):
+        if not it.text.strip():
+            return {"error": "every item needs a non-empty text"}
+        iid = it.id.strip() or str(i + 1)
+        if len(iid) > CHECKLIST_ID_MAX:
+            return {"error": "item ids must be <= 64 chars"}
+        if iid in seen:
+            return {"error": "item ids must be unique"}
+        seen.add(iid)
+        if cols:
+            if len(it.cells) != len(cols):
+                return {
+                    "error": "every item needs len(cells) == len(columns)"
+                }
+        elif it.cells:
+            return {"error": "cells are only valid with columns"}
+        out_items.append(
+            {
+                "id": iid,
+                "text": it.text,
+                "cells": list(it.cells) if cols else [],
+                "checked": bool(it.checked),
+            }
+        )
+    ctx.deps.checklists.append(
+        {
+            "type": "checklist",
+            "checklist_id": uuid4().hex,
+            "title": title,
+            "columns": cols,
+            "items": out_items,
+            "submit_label": submit_label.strip() or "Отправить",
+            "skill": ctx.deps.skill_name,
+            "skill_id": ctx.deps.skill_id,
+            "submissions": 0,
+            "submitted_by": None,
+            "submitted_at": None,
+        }
+    )
+    return {
+        "ok": True,
+        "note": (
+            "чек-лист показан пользователю; заверши ход коротко, не "
+            "дублируя пункты — отмеченное состояние придёт следующим "
+            "сообщением"
         ),
     }
 
@@ -743,6 +840,7 @@ SUBAGENT_INSTRUCTIONS = (
 SUBAGENT_EXCLUDED = {
     "run_subagent",
     "ask_user_question",
+    "show_checklist",
     "use_skill",
     "end_skill",
     "save_skill",
@@ -868,6 +966,7 @@ DYNAMIC_TOOLS = (
     "read_skill_file",
     "save_skill",
     "ask_user_question",
+    "show_checklist",
     "run_subagent",
 )
 

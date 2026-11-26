@@ -393,6 +393,7 @@ async def post_message(
     parts: list[dict[str, Any]],
     client_msg_id: str | None,
     source_channel: str = "web",
+    hidden: bool = False,
 ) -> tuple[Message, bool]:
     """Append a message; idempotent on (conversation, author, client_msg_id)."""
     if client_msg_id is not None:
@@ -429,6 +430,7 @@ async def post_message(
         author_id=author.id,
         parts=parts,
         source_channel=source_channel,
+        hidden=hidden,
         client_msg_id=client_msg_id,
     )
     session.add(msg)
@@ -464,6 +466,7 @@ async def post_assistant_message(
     parts: list[dict[str, Any]],
     run_id: int | None,
     author_kind: str = "assistant",
+    hidden: bool = False,
 ) -> Message:
     """Append an assistant/system message produced by the server."""
     parts = [
@@ -493,6 +496,7 @@ async def post_assistant_message(
         author_id=None,
         parts=parts,
         run_id=run_id,
+        hidden=hidden,
     )
     session.add(msg)
     conv.updated_at = utcnow()
@@ -529,6 +533,7 @@ async def list_messages(
     conversation_id: int,
     before_seq: int | None,
     limit: int,
+    include_hidden: bool = False,
 ) -> list[Message]:
     q = (
         select(Message)
@@ -536,6 +541,8 @@ async def list_messages(
         .order_by(Message.seq.desc())
         .limit(limit)
     )
+    if not include_hidden:
+        q = q.where(Message.hidden.is_(False))
     if before_seq is not None:
         q = q.where(Message.seq < before_seq)
     rows = list((await session.execute(q)).scalars())
@@ -577,6 +584,7 @@ async def search_messages(
         .where(
             Message.conversation_id.in_(member_conv),
             Conversation.status != "deleted",
+            Message.hidden.is_(False),
             cond,
         )
         .order_by(Message.created_at.desc())

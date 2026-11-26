@@ -96,6 +96,7 @@ export async function loadOlder(conversationId: number): Promise<void> {
 }
 
 export function applyMessageCreated(message: MessageOut): void {
+  if (message.hidden) return
   const convId = message.conversation_id
   patch(
     $messages,

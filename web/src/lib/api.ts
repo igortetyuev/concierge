@@ -85,6 +85,7 @@ export interface MessageOut {
   parts: MessagePart[]
   run_id: number | null
   source_channel: string
+  hidden: boolean
   client_msg_id: string | null
   created_at: string | null
 }
@@ -845,6 +846,11 @@ export const apiClient = {
     post<MessageOut>(`/conversations/${id}/messages/${messageId}/answer`, {
       choice_id: choiceId,
       answers,
+    }),
+  submitChecklist: (id: number, messageId: number, checklistId: string, checked: string[]) =>
+    post<MessageOut>(`/conversations/${id}/messages/${messageId}/checklist`, {
+      checklist_id: checklistId,
+      checked,
     }),
   clearActiveSkill: (id: number) =>
     api<{ ok: boolean }>(`/conversations/${id}/skill`, { method: 'DELETE' }),

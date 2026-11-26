@@ -163,6 +163,7 @@ export async function loadUsers(): Promise<void> {
 }
 
 export function applyMessageToList(message: MessageOut): void {
+  if (message.hidden) return
   const convId = message.conversation_id
   patchRecord($maxSeq, convId, Math.max($maxSeq.get()[convId] ?? 0, message.seq))
   const text = messageText(message.parts)

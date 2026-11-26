@@ -355,6 +355,11 @@ def render_for_summary(parts: list[dict[str, Any]]) -> str:
                 str(q.get("question", "")) for q in p.get("questions") or []
             )
             lines.append(f"[вопрос пользователю] {qs}")
+        elif ptype == "checklist":
+            items = p.get("items") or []
+            lines.append(
+                f"[чек-лист] {p.get('title') or ''} ({len(items)} пунктов)"
+            )
         elif ptype == "skill_event":
             verb = "запущен" if p.get("action") == "start" else "завершён"
             lines.append(f"[скилл «{p.get('name', '?')}» {verb}]")

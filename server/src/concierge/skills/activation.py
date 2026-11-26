@@ -17,6 +17,8 @@ SKILL_COMPAT_PREAMBLE = (
     "- Read / skill_view файла скилла, пути вида ${CLAUDE_SKILL_DIR}/x — "
     "используй `read_skill_file` с путём «x».\n"  # noqa: RUF001
     "- TodoWrite — веди список задач прямо в тексте ответа.\n"
+    "- Todo-лист / чек-лист с галочками для пользователя — используй "  # noqa: RUF001
+    "`show_checklist`.\n"
     "- Bash / Edit / Write / терминал недоступны: если нужно изменение "
     "кода — `delegate_coding_task` (если доступен), иначе скажи "
     "пользователю.\n"

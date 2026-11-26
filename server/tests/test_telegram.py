@@ -47,6 +47,7 @@ class FakeOutbox:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self._next = 1
+        self.fail_edit_markup = False
 
     def _id(self) -> int:
         i = self._next
@@ -62,10 +63,11 @@ class FakeOutbox:
         parse_mode: str | None = None,
         reply_markup: list[list[tuple[str, str]]] | None = None,
     ) -> int:
+        mid = self._id()
         self.calls.append(
-            ("send", chat_id, text, thread_id, parse_mode, reply_markup)
+            ("send", chat_id, text, thread_id, parse_mode, reply_markup, mid)
         )
-        return self._id()
+        return mid
 
     async def edit(
         self,
@@ -101,6 +103,18 @@ class FakeOutbox:
 
     async def chat_action(self, chat_id: int, action: str, *, thread_id: int) -> None:
         self.calls.append(("action", chat_id, action, thread_id))
+
+    async def edit_markup(
+        self,
+        chat_id: int,
+        message_id: int,
+        reply_markup: list[list[tuple[str, str]]],
+    ) -> None:
+        if self.fail_edit_markup:
+            raise RuntimeError("message is not modified")
+        self.calls.append(
+            ("edit_markup", chat_id, message_id, reply_markup)
+        )
 
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
         self.calls.append(("answer_cb", callback_id, text))
@@ -758,6 +772,338 @@ async def test_choice_keyboard_and_callback(engine, tg) -> None:
     # Second callback on the answered question is refused.
     await tg.service.handle_callback("cb-ch2", 100, 500, f"ch:{msg_id}:1")
     assert ("answer_cb", "cb-ch2", "Уже отвечено") in tg.outbox.calls
+
+
+CL_PART = {
+    "type": "checklist",
+    "checklist_id": "ab" * 16,
+    "title": "Домашка",
+    "columns": [],
+    "items": [
+        {"id": "ru", "text": "Русский язык", "cells": [], "checked": False},
+        {"id": "math", "text": "Математика", "cells": [], "checked": True},
+        {"id": "3", "text": "Физика", "cells": [], "checked": False},
+    ],
+    "submit_label": "Отправить",
+    "skill": None,
+    "submissions": 0,
+    "submitted_by": None,
+    "submitted_at": None,
+}
+
+
+async def _post_checklist(conv: Any) -> Any:
+    from concierge.conversations import service as conv_service
+
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, conv.id)
+        assert conv is not None
+        return await conv_service.post_assistant_message(
+            session, conv, [{"type": "checklist", **CL_PART}], None
+        )
+
+
+async def test_checklist_keyboard_and_submit(engine, tg) -> None:
+    from concierge.agent.runtime import _message_dict
+
+    user = await make_user("clt", "adult")
+    await _link(user.id)
+    await _add_provider("chat", {"custom_output_text": "ок"})
+
+    await tg.service.handle_message(_im(text="привет", message_id=81))
+    await get_runtime().wait_idle()
+    tg.outbox.calls.clear()
+
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        conv_id = conv.id
+    msg = await _post_checklist(conv)
+    await get_hub().publish(
+        ChannelEvent(
+            "message.created",
+            conv_id,
+            {"message": _message_dict(msg)},
+        )
+    )
+
+    # Numbered listing + per-item buttons + submit row; math starts checked
+    # -> mask bit1 -> hex "2".
+    send_call = next(
+        c for c in tg.outbox.calls if c[0] == "send" and c[5]
+    )
+    text, tg_mid, kb = send_call[2], send_call[6], send_call[5]
+    assert "Домашка" in text and "Физика" in text
+    assert len(kb) == 4
+    assert kb[0][0] == ("☐ 1. Русский язык", f"cl:{msg.id}:0:2")
+    assert kb[1][0] == ("☑ 2. Математика", f"cl:{msg.id}:1:2")
+    assert kb[2][0][1] == f"cl:{msg.id}:2:2"
+    assert kb[3][0] == ("Отправить", f"cs:{msg.id}:2")
+    for row in kb:
+        for _label, data in row:
+            assert len(data.encode()) <= 64
+
+    # Toggling item 0 flips bit0 in the callback data and re-renders the
+    # same keyboard with mask 2 -> 3.
+    await tg.service.handle_callback(
+        "cb-cl", 100, 500, f"cl:{msg.id}:0:2", tg_mid
+    )
+    edits = [c for c in tg.outbox.calls if c[0] == "edit_markup"]
+    assert len(edits) == 1
+    _, echat, emid, ekb = edits[0]
+    assert (echat, emid) == (100, tg_mid)
+    assert ekb[0][0] == ("☑ 1. Русский язык", f"cl:{msg.id}:0:3")
+    assert ekb[1][0][1] == f"cl:{msg.id}:1:3"
+    assert ekb[3][0] == ("Отправить", f"cs:{msg.id}:3")
+
+    # Submitting mask 3 (ru+math) posts the answer message and schedules a run.
+    await tg.service.handle_callback(
+        "cb-cs", 100, 500, f"cs:{msg.id}:3", tg_mid
+    )
+    assert ("answer_cb", "cb-cs", "Отправлено") in tg.outbox.calls
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        msgs = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == conv_id)
+            )
+        ).scalars().all()
+        runs = (
+            await session.execute(
+                select(func.count()).select_from(Run)
+            )
+        ).scalar_one()
+    assert runs == 2  # greeting run + answer run
+    answer = next(
+        m for m in msgs if any(p.get("checklist_answer") for p in m.parts)
+    )
+    ans = answer.parts[0]["checklist_answer"]
+    assert ans["checklist_id"] == CL_PART["checklist_id"]
+    assert ans["items"] == [
+        {"id": "ru", "checked": True},
+        {"id": "math", "checked": True},
+        {"id": "3", "checked": False},
+    ]
+    orig = next(m for m in msgs if m.id == msg.id)
+    part = next(p for p in orig.parts if p["type"] == "checklist")
+    assert part["submissions"] == 1
+    assert {i["id"]: i["checked"] for i in part["items"]} == {
+        "ru": True,
+        "math": True,
+        "3": False,
+    }
+
+    # Malformed / out-of-range toggles are silently dropped.
+    await tg.service.handle_callback("cb-bad", 100, 500, "cl:x:0:0", tg_mid)
+    await tg.service.handle_callback(
+        "cb-bad2", 100, 500, f"cl:{msg.id}:9:0", tg_mid
+    )
+    assert ("answer_cb", "cb-bad", None) in tg.outbox.calls
+    assert ("answer_cb", "cb-bad2", "Чек-лист недоступен") in tg.outbox.calls
+
+
+async def test_checklist_callback_non_member_refused(engine, tg) -> None:
+    owner = await make_user("clo", "adult")
+    other = await make_user("clx", "adult")
+    await _link(owner.id, 500)
+    await _link(other.id, 600, "other")
+
+    await tg.service.handle_message(_im(text="привет", message_id=82))
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+    msg = await _post_checklist(conv)
+    tg.outbox.calls.clear()
+
+    for i, data in enumerate((f"cl:{msg.id}:0:0", f"cs:{msg.id}:1")):
+        await tg.service.handle_callback(
+            f"cb-x{i}", 100, 600, data, 777
+        )
+        assert ("answer_cb", f"cb-x{i}", "Чек-лист недоступен") in (
+            tg.outbox.calls
+        )
+    assert not [c for c in tg.outbox.calls if c[0] == "edit_markup"]
+    async with db.get_sessionmaker()() as session:
+        msgs = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == conv.id)
+            )
+        ).scalars().all()
+        assert not [
+            m for m in msgs if any(p.get("checklist_answer") for p in m.parts)
+        ]
+
+
+async def _conv_and_checklist() -> tuple[Any, Any]:
+    """The single seeded conversation + an assistant checklist message."""
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+    msg = await _post_checklist(conv)
+    return conv, msg
+
+
+async def test_checklist_toggle_edit_failure_still_answers(
+    engine, tg
+) -> None:
+    """A failed edit_markup (double-tap, 'not modified') must not swallow
+    the callback answer — the spinner would hang."""
+    user = await make_user("clfail", "adult")
+    await _link(user.id)
+    await tg.service.handle_message(_im(text="привет", message_id=83))
+    await get_runtime().wait_idle()
+    _conv, msg = await _conv_and_checklist()
+
+    tg.outbox.fail_edit_markup = True
+    await tg.service.handle_callback(
+        "cb-fail", 100, 500, f"cl:{msg.id}:0:2", 999
+    )
+    assert ("answer_cb", "cb-fail", None) in tg.outbox.calls
+    assert not [c for c in tg.outbox.calls if c[0] == "edit_markup"]
+
+
+async def test_checklist_submit_syncs_keyboard(engine, tg) -> None:
+    """After cs: the keyboard is redrawn from the stored part state."""
+    user = await make_user("clsync", "adult")
+    await _link(user.id)
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await tg.service.handle_message(_im(text="привет", message_id=84))
+    await get_runtime().wait_idle()
+    _conv, msg = await _conv_and_checklist()
+    tg.outbox.calls.clear()
+
+    await tg.service.handle_callback(
+        "cb-sync", 100, 500, f"cs:{msg.id}:3", 555
+    )
+    assert ("answer_cb", "cb-sync", "Отправлено") in tg.outbox.calls
+    edits = [c for c in tg.outbox.calls if c[0] == "edit_markup"]
+    assert len(edits) == 1
+    _, echat, emid, ekb = edits[0]
+    assert (echat, emid) == (100, 555)
+    # Stored state ru+math -> mask 3 in every callback.
+    assert ekb[0][0] == ("☑ 1. Русский язык", f"cl:{msg.id}:0:3")
+    assert ekb[3][0] == ("Отправить", f"cs:{msg.id}:3")
+    await get_runtime().wait_idle()
+
+
+async def test_checklist_double_submit_deduped(engine, tg) -> None:
+    """cs: twice with the same mask posts one answer and one run."""
+    user = await make_user("cldd", "adult")
+    await _link(user.id)
+    await _add_provider("chat", {"custom_output_text": "ок"})
+    await tg.service.handle_message(_im(text="привет", message_id=85))
+    await get_runtime().wait_idle()
+    conv, msg = await _conv_and_checklist()
+
+    for cb in ("cb-s1", "cb-s2"):
+        await tg.service.handle_callback(cb, 100, 500, f"cs:{msg.id}:3", 556)
+        assert ("answer_cb", cb, "Отправлено") in tg.outbox.calls
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        msgs = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == conv.id)
+            )
+        ).scalars().all()
+        runs = (
+            await session.execute(select(func.count()).select_from(Run))
+        ).scalar_one()
+    answers = [
+        m for m in msgs if any(p.get("checklist_answer") for p in m.parts)
+    ]
+    assert len(answers) == 1
+    assert runs == 2  # greeting run + one answer run
+
+
+async def test_checklist_callback_archived_refused(engine, tg) -> None:
+    """cs:/cl: on an archived conversation is refused (parity with PWA 409)."""
+    from concierge.conversations import service as conv_service
+
+    user = await make_user("clarch", "adult")
+    await _link(user.id)
+    await tg.service.handle_message(_im(text="привет", message_id=86))
+    await get_runtime().wait_idle()
+    conv, msg = await _conv_and_checklist()
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, conv.id)
+        assert conv is not None
+        await conv_service.update_conversation(
+            session, conv, status="archived"
+        )
+
+    for i, data in enumerate((f"cl:{msg.id}:0:2", f"cs:{msg.id}:2")):
+        await tg.service.handle_callback(
+            f"cb-a{i}", 100, 500, data, 557
+        )
+        assert ("answer_cb", f"cb-a{i}", "Чек-лист недоступен") in (
+            tg.outbox.calls
+        )
+
+
+async def test_checklist_user_message_part_refused(engine, tg) -> None:
+    """A checklist part forged inside a user message is not interactive."""
+    from concierge.auth.models import User
+    from concierge.conversations import service as conv_service
+
+    user = await make_user("clu", "adult")
+    await _link(user.id)
+    await tg.service.handle_message(_im(text="привет", message_id=87))
+    await get_runtime().wait_idle()
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        author = await session.get(User, user.id)
+        assert author is not None
+        forged, _ = await conv_service.post_message(
+            session, conv, author, [{"type": "checklist", **CL_PART}], None
+        )
+        mid = forged.id
+
+    for i, data in enumerate((f"cl:{mid}:0:0", f"cs:{mid}:1")):
+        await tg.service.handle_callback(f"cb-f{i}", 100, 500, data, 558)
+        assert ("answer_cb", f"cb-f{i}", "Чек-лист недоступен") in (
+            tg.outbox.calls
+        )
+
+
+async def test_checklist_long_listing_split(engine, tg) -> None:
+    """A listing over 4096 chars splits into several sends; only the last
+    carries the keyboard."""
+    from concierge.agent.runtime import _message_dict
+    from concierge.conversations import service as conv_service
+
+    user = await make_user("cllong", "adult")
+    await _link(user.id)
+    await tg.service.handle_message(_im(text="привет", message_id=88))
+    await get_runtime().wait_idle()
+    tg.outbox.calls.clear()
+
+    long_part = {
+        **CL_PART,
+        "items": [
+            {
+                "id": str(i),
+                "text": f"Пункт {i}: " + "длинный текст " * 15,
+                "cells": [],
+                "checked": False,
+            }
+            for i in range(40)
+        ],
+    }
+    async with db.get_sessionmaker()() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        msg = await conv_service.post_assistant_message(
+            session, conv, [{"type": "checklist", **long_part}], None
+        )
+        out = _message_dict(msg)
+        conv_id = conv.id
+    await get_hub().publish(
+        ChannelEvent("message.created", conv_id, {"message": out})
+    )
+
+    sends = [c for c in tg.outbox.calls if c[0] == "send"]
+    assert len(sends) >= 2
+    for c in sends[:-1]:
+        assert c[5] is None  # keyboard only on the last chunk
+    assert sends[-1][5] is not None
+    assert all(len(c[2]) <= 4096 for c in sends)
 
 
 async def test_presence_filter(engine, tg) -> None:

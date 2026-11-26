@@ -64,6 +64,10 @@ def make_use_skill_tool(names: list[str]) -> Callable[..., Any]:
                     "error": f"unknown skill {name!r}",
                     "available": names,
                 }
+            # Interactive parts shown after this call must record the skill
+            # so their answers re-apply it (ephemeral ones have no state).
+            ctx.deps.skill_name = skill.name
+            ctx.deps.skill_id = skill.id
             body = render_body(
                 body_of(skill.content), arguments, skill.name
             )

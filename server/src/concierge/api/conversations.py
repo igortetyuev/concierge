@@ -75,6 +75,7 @@ class MessageOut(BaseModel):
     parts: list[dict[str, Any]]
     run_id: int | None
     source_channel: str
+    hidden: bool
     client_msg_id: str | None
     created_at: datetime | None
 
@@ -89,6 +90,7 @@ class MessageOut(BaseModel):
             parts=m.parts,
             run_id=m.run_id,
             source_channel=m.source_channel,
+            hidden=m.hidden,
             client_msg_id=m.client_msg_id,
             created_at=m.created_at,
         )
@@ -584,6 +586,47 @@ async def answer_message(
     except skill_choices.ChoiceError as e:
         code = 404 if str(e) == "not_found" else 409
         raise HTTPException(code, "choice not found" if code == 404 else "already answered") from e
+    return MessageOut.of(reply).model_dump(mode="json")
+
+
+class ChecklistBody(BaseModel):
+    checklist_id: str
+    checked: list[str] = []
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/checklist",
+    status_code=201,
+)
+async def submit_checklist(
+    conversation_id: int,
+    message_id: int,
+    body: ChecklistBody,
+    user: CurrentUser,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Submit a `checklist` part's checkbox state; posts a user message
+    carrying a `checklist_answer` snapshot and schedules the next run.
+    Resubmission is allowed."""
+    conv = await _member_conv_or_404(session, conversation_id, user)
+    if conv.status != "active":
+        raise HTTPException(409, "conversation is archived")
+    from concierge.skills import checklists as skill_checklists
+
+    try:
+        reply = await skill_checklists.submit_checklist(
+            session,
+            conv,
+            user,
+            message_id,
+            body.checklist_id,
+            body.checked,
+            "web",
+        )
+    except skill_checklists.ChecklistError as e:
+        if str(e) == "unknown_item":
+            raise HTTPException(422, "unknown checklist item id") from e
+        raise HTTPException(404, "checklist not found") from e
     return MessageOut.of(reply).model_dump(mode="json")
 
 

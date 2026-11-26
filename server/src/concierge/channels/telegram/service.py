@@ -39,6 +39,7 @@ from concierge.media.pipeline import get_pipeline
 from concierge.memory import indexer as memory_indexer
 from concierge.settings import service as settings_service
 from concierge.settings.models import SettingScope
+from concierge.skills import checklists as skills_checklists
 from concierge.skills import choices as skills_choices
 from concierge.skills import service as skills_service
 
@@ -136,6 +137,13 @@ class TelegramOutbox(Protocol):
         self, chat_id: int, action: str, *, thread_id: int
     ) -> None: ...
 
+    async def edit_markup(
+        self,
+        chat_id: int,
+        message_id: int,
+        reply_markup: list[list[tuple[str, str]]],
+    ) -> None: ...
+
     async def answer_callback(
         self, callback_id: str, text: str | None = None
     ) -> None: ...
@@ -143,6 +151,50 @@ class TelegramOutbox(Protocol):
 
 def hash_link_code(code: str) -> str:
     return hashlib.sha256(code.strip().encode()).hexdigest()
+
+
+def checklist_mask(part: dict[str, Any]) -> int:
+    """Bitmask of checked items: bit i = items[i].checked."""
+    mask = 0
+    for i, item in enumerate(part.get("items") or []):
+        if item.get("checked"):
+            mask |= 1 << i
+    return mask
+
+
+def checklist_markup(
+    mid: Any, part: dict[str, Any], mask: int
+) -> list[list[tuple[str, str]]]:
+    """Inline keyboard for a `checklist` part: one toggle button per item
+    (`cl:{mid}:{idx}:{maskhex}` flips bit idx) plus a submit row
+    (`cs:{mid}:{maskhex}`). Bit i of the hex mask = item i checked."""
+    items = part.get("items") or []
+    maskhex = format(mask, "x")
+    rows = [
+        [
+            (
+                f"{'☑' if mask >> i & 1 else '☐'} {i + 1}. "
+                f"{_clip(str(item.get('text') or ''))}",
+                f"cl:{mid}:{i}:{maskhex}",
+            )
+        ]
+        for i, item in enumerate(items)
+    ]
+    rows.append(
+        [
+            (
+                str(part.get("submit_label") or "Отправить"),
+                f"cs:{mid}:{maskhex}",
+            )
+        ]
+    )
+    return rows
+
+
+def _clip(text: str, limit: int = 34) -> str:
+    """One-line button-label clip: '☑ 50. ' takes 6 chars of the 40."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 async def notify_user_dm(user_id: int, text: str) -> None:
@@ -271,6 +323,7 @@ class TelegramService:
         chat_id: int,
         tg_user_id: int,
         data: str,
+        tg_message_id: int = 0,
     ) -> None:
         async with get_sessionmaker()() as session:
             link = await self._link_for(session, tg_user_id)
@@ -293,7 +346,12 @@ class TelegramService:
                     if msg is not None
                     else None
                 )
-                if msg is None or conv is None:
+                if (
+                    msg is None
+                    or msg.author_kind != "assistant"
+                    or conv is None
+                    or conv.status != "active"
+                ):
                     await self._outbox.answer_callback(
                         callback_id, "Вопрос недоступен"
                     )
@@ -326,6 +384,110 @@ class TelegramService:
                     return
                 await self._outbox.answer_callback(callback_id, "Ответ принят")
                 return
+            if data.startswith("cl:"):
+                try:
+                    _tag, raw_mid, raw_idx, raw_mask = data.split(":")
+                    message_id = int(raw_mid)
+                    idx = int(raw_idx)
+                    mask = int(raw_mask, 16)
+                except ValueError:
+                    await self._outbox.answer_callback(callback_id)
+                    return
+                part, conv = await self._checklist_part(
+                    session, message_id, user
+                )
+                items = (part or {}).get("items") or []
+                if (
+                    part is None
+                    or conv is None
+                    or not 0 <= idx < len(items)
+                ):
+                    await self._outbox.answer_callback(
+                        callback_id, "Чек-лист недоступен"
+                    )
+                    return
+                if tg_message_id:
+                    try:
+                        await self._outbox.edit_markup(
+                            chat_id,
+                            tg_message_id,
+                            checklist_markup(
+                                message_id, part, mask ^ (1 << idx)
+                            ),
+                        )
+                    except Exception:
+                        log.info(
+                            "checklist toggle edit_markup failed mid=%s",
+                            message_id,
+                        )
+                await self._outbox.answer_callback(callback_id)
+                return
+            if data.startswith("cs:"):
+                try:
+                    _tag, raw_mid, raw_mask = data.split(":")
+                    message_id = int(raw_mid)
+                    mask = int(raw_mask, 16)
+                except ValueError:
+                    await self._outbox.answer_callback(callback_id)
+                    return
+                part, conv = await self._checklist_part(
+                    session, message_id, user
+                )
+                if part is None or conv is None:
+                    await self._outbox.answer_callback(
+                        callback_id, "Чек-лист недоступен"
+                    )
+                    return
+                checked = [
+                    str(it.get("id"))
+                    for i, it in enumerate(part.get("items") or [])
+                    if mask >> i & 1
+                ]
+                try:
+                    await skills_checklists.submit_checklist(
+                        session,
+                        conv,
+                        user,
+                        message_id,
+                        str(part.get("checklist_id") or ""),
+                        checked,
+                        "telegram",
+                    )
+                except skills_checklists.ChecklistError:
+                    await self._outbox.answer_callback(
+                        callback_id, "Чек-лист недоступен"
+                    )
+                    return
+                if tg_message_id:
+                    # Sync the keyboard to the stored state: it now reflects
+                    # what was actually saved (and shows it after a resubmit).
+                    fresh = await session.get(Message, message_id)
+                    fresh_part = next(
+                        (
+                            p
+                            for p in (fresh.parts if fresh else [])
+                            if p.get("type") == "checklist"
+                        ),
+                        None,
+                    )
+                    if fresh_part is not None:
+                        try:
+                            await self._outbox.edit_markup(
+                                chat_id,
+                                tg_message_id,
+                                checklist_markup(
+                                    message_id,
+                                    fresh_part,
+                                    checklist_mask(fresh_part),
+                                ),
+                            )
+                        except Exception:
+                            log.info(
+                                "checklist submit edit_markup failed mid=%s",
+                                message_id,
+                            )
+                await self._outbox.answer_callback(callback_id, "Отправлено")
+                return
             if data.startswith("sel:"):
                 try:
                     conv_id = int(data[4:])
@@ -351,6 +513,26 @@ class TelegramService:
                 )
                 return
             await self._outbox.answer_callback(callback_id)
+
+    async def _checklist_part(
+        self, session: AsyncSession, message_id: int, user: User
+    ) -> tuple[dict[str, Any] | None, Conversation | None]:
+        """(checklist part, member conversation) or (None, None) when the
+        message has no checklist or the user is not a member."""
+        msg = await session.get(Message, message_id)
+        if msg is None or msg.author_kind != "assistant":
+            return None, None
+        part = next(
+            (p for p in msg.parts if p.get("type") == "checklist"), None
+        )
+        if part is None:
+            return None, None
+        conv = await conversations.get_member_conversation(
+            session, msg.conversation_id, user.id
+        )
+        if conv is None or conv.status != "active":
+            return None, None
+        return part, conv
 
     # ---------- auth / linking ----------
 

@@ -11,6 +11,7 @@ import {
   setRunOpen,
 } from '../store/messages'
 import { $composerPrefill } from '../store/ui'
+import ChecklistPart from './ChecklistPart'
 import ImageLightbox from './ImageLightbox'
 import Markdown from './Markdown'
 import { IconCheck, IconClose, IconCopy, IconFile, IconSpeaker, IconTool } from './icons'
@@ -730,6 +731,16 @@ export default function MessageParts({
         if (p.type === 'choice') {
           return (
             <ChoicePart
+              key={i}
+              part={p}
+              convId={convId}
+              messageId={messageId}
+            />
+          )
+        }
+        if (p.type === 'checklist') {
+          return (
+            <ChecklistPart
               key={i}
               part={p}
               convId={convId}

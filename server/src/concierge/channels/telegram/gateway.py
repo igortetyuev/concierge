@@ -52,6 +52,22 @@ BOT_COMMANDS = [
 ]
 
 
+def _to_markup(
+    rows: list[list[tuple[str, str]]] | None,
+) -> InlineKeyboardMarkup | None:
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=label, callback_data=data)
+                for label, data in row
+            ]
+            for row in rows
+        ]
+    )
+
+
 class AiogramOutbox:
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
@@ -68,23 +84,12 @@ class AiogramOutbox:
         parse_mode: str | None = None,
         reply_markup: list[list[tuple[str, str]]] | None = None,
     ) -> int:
-        markup = None
-        if reply_markup:
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text=label, callback_data=data)
-                        for label, data in row
-                    ]
-                    for row in reply_markup
-                ]
-            )
         msg = await self._bot.send_message(
             chat_id,
             text,
             message_thread_id=self._thread(thread_id),
             parse_mode=parse_mode,
-            reply_markup=markup,
+            reply_markup=_to_markup(reply_markup),
         )
         return msg.message_id
 
@@ -142,6 +147,18 @@ class AiogramOutbox:
     ) -> None:
         await self._bot.send_chat_action(
             chat_id, action, message_thread_id=self._thread(thread_id)
+        )
+
+    async def edit_markup(
+        self,
+        chat_id: int,
+        message_id: int,
+        reply_markup: list[list[tuple[str, str]]],
+    ) -> None:
+        await self._bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=_to_markup(reply_markup),
         )
 
     async def answer_callback(
@@ -266,7 +283,11 @@ class TelegramGateway:
             await self._service.handle_callback(cb.id, 0, 0, cb.data or "")
             return
         await self._service.handle_callback(
-            cb.id, cb.message.chat.id, cb.from_user.id, cb.data or ""
+            cb.id,
+            cb.message.chat.id,
+            cb.from_user.id,
+            cb.data or "",
+            cb.message.message_id,
         )
 
     async def _to_inbound(self, m: Message) -> InboundMessage | None:

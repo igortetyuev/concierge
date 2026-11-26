@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint, false, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +91,7 @@ class Message(Base):
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JSONBType, default=list)
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"))
     source_channel: Mapped[str] = mapped_column(String(16), default="web")
+    hidden: Mapped[bool] = mapped_column(default=False, server_default=false())
     client_msg_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     indexed_at: Mapped[datetime | None] = mapped_column(index=True)

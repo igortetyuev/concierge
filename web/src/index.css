@@ -2168,3 +2168,105 @@ body.sidebar-resizing {
 .choice-open-hint {
   font-size: 0.8rem;
 }
+
+.checklist-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 220px;
+  max-width: 560px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.checklist-card.table {
+  max-width: 920px;
+}
+
+.checklist-card .btn {
+  align-self: flex-start;
+}
+
+.checklist-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.checklist-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.checklist-item input {
+  margin-top: 3px;
+}
+
+.checklist-item.checked span {
+  color: var(--text-2);
+  text-decoration: line-through;
+}
+
+.checklist-table-wrap {
+  overflow-x: auto;
+}
+
+.checklist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.checklist-table th,
+.checklist-table td {
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.checklist-table th:not(.checklist-check):not(:last-child),
+.checklist-table td:not(.checklist-check):not(:last-child) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.checklist-table thead th {
+  border-top: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.checklist-table .checklist-check {
+  width: 1%;
+  padding-right: 0;
+}
+
+.checklist-table tr.checked td {
+  color: var(--text-2);
+}
+
+.checklist-table .md p {
+  margin: 0;
+}
+
+.checklist-note {
+  font-size: 0.78rem;
+}

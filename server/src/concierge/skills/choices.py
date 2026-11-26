@@ -3,13 +3,13 @@
 import logging
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from concierge.auth.models import User
-from concierge.channels import ChannelEvent, get_hub
 from concierge.conversations import service as conversations
 from concierge.conversations.models import Conversation, Message
-from concierge.memory import indexer as memory_indexer
+from concierge.skills.checklists import publish_answer
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +45,19 @@ async def answer_choice(
     Raises ChoiceError("not_found" | "answered"). The caller's session must
     already have verified the user's membership in `conv`.
     """
-    msg = await session.get(Message, message_id)
-    if msg is None or msg.conversation_id != conv.id:
+    msg = (
+        await session.execute(
+            select(Message)
+            .where(Message.id == message_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if (
+        msg is None
+        or msg.conversation_id != conv.id
+        or msg.author_kind != "assistant"
+    ):
         raise ChoiceError("not_found")
     part = next(
         (
@@ -71,7 +82,7 @@ async def answer_choice(
     ]
     msg.parts = parts
     text = render_answers(questions, answers)
-    reply, _ = await conversations.post_message(
+    reply, created = await conversations.post_message(
         session,
         conv,
         user,
@@ -82,6 +93,8 @@ async def answer_choice(
                 "choice_answer": {
                     "message_id": message_id,
                     "choice_id": choice_id,
+                    "skill": part.get("skill"),
+                    "skill_id": part.get("skill_id"),
                     "answers": answers,
                 },
             }
@@ -90,23 +103,6 @@ async def answer_choice(
         source_channel=source_channel,
     )
     await session.commit()
-    # Late import: agent.runtime -> skills.tools would circular-import.
-    from concierge.agent.runtime import _message_dict, get_runtime
-
-    reply_out = _message_dict(reply)
-    msg_out = _message_dict(msg)
-    conv_id, reply_id = conv.id, reply.id
-    hub = get_hub()
-    await hub.publish(
-        ChannelEvent(
-            "message.updated", conv_id, {"message": msg_out}
-        )
-    )
-    await hub.publish(
-        ChannelEvent(
-            "message.created", conv_id, {"message": reply_out}
-        )
-    )
-    memory_indexer.kick()
-    get_runtime().schedule(conv_id, reply_id)
+    if created:
+        await publish_answer(conv.id, msg, reply)
     return reply

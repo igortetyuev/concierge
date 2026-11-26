@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 import logging
 from typing import Any
 
@@ -102,9 +103,10 @@ class AgentRuntime:
     ) -> None:
         lock = self._locks.setdefault(conversation_id, asyncio.Lock())
         if lock.locked() and not wait:
-            # A /stop or /skill command sent mid-run must not be lost:
-            # re-read the trigger and requeue it with wait=True.
-            if not await self._is_skill_command(trigger_message_id):
+            # A /stop, /skill command or interactive-part answer sent
+            # mid-run must not be lost: re-read the trigger and requeue
+            # it with wait=True.
+            if not await self._must_requeue(trigger_message_id):
                 return  # one run per conversation at a time
             wait = True
         async with lock:
@@ -113,12 +115,15 @@ class AgentRuntime:
             except Exception:
                 log.exception("agent run failed conv=%s", conversation_id)
 
-    async def _is_skill_command(self, trigger_message_id: int) -> bool:
+    async def _must_requeue(self, trigger_message_id: int) -> bool:
         async with get_sessionmaker()() as session:
             trigger = await session.get(Message, trigger_message_id)
             if trigger is None:
                 return False
-            return skill_activation.parse_command(trigger.parts) is not None
+            return (
+                skill_activation.parse_command(trigger.parts) is not None
+                or _is_interactive_reply(trigger.parts)
+            )
 
     async def _run(self, conversation_id: int, trigger_message_id: int) -> None:
         session_maker = get_sessionmaker()
@@ -130,6 +135,7 @@ class AgentRuntime:
             user = await session.get(User, trigger.author_id)
             if user is None or conv.status != "active":
                 return
+            hidden_reply = trigger.hidden and _is_checklist_reply(trigger.parts)
             # /stop never creates a run: it only unpins the active skill.
             cmd = skill_activation.parse_command(trigger.parts)
             if cmd is not None and cmd[0] == "stop":
@@ -162,6 +168,34 @@ class AgentRuntime:
                         conv.id,
                         {"message": _message_dict(msg)},
                     )
+            # A choice/checklist answer continues the flow that produced the
+            # part: it counts as a mention (wakes reply_mode='mention') and
+            # skips phrase triggers, and the skill recorded on the part is
+            # re-applied — ephemeral ones get injected for this run only.
+            if not activated and _is_interactive_reply(trigger.parts):
+                activated = True
+                skill_id, skill_name = _answer_skill(trigger.parts)
+                skill = None
+                if skill_id is not None:
+                    # Resolve by id among the answering user's skills: a
+                    # same-named skill of the answerer must not shadow the
+                    # one that produced the part.
+                    skill = next(
+                        (
+                            s
+                            for s in await skill_service.available_skills(
+                                session, user
+                            )
+                            if s.id == skill_id
+                        ),
+                        None,
+                    )
+                elif skill_name is not None:
+                    skill = await skill_service.resolve(
+                        session, user, skill_name
+                    )
+                if skill is not None and skill.ephemeral:
+                    ephemeral_state = (skill, "")
             if (
                 conv.reply_mode == "mention"
                 and not activated
@@ -184,7 +218,11 @@ class AgentRuntime:
             if trigger_att:
                 await get_pipeline().wait_for(trigger_att)
             history_rows = await conversations.list_messages(
-                session, conv.id, before_seq=trigger.seq, limit=HISTORY_LIMIT
+                session,
+                conv.id,
+                before_seq=trigger.seq,
+                limit=HISTORY_LIMIT,
+                include_hidden=True,
             )
             atts = await self._attachments(session, [*history_rows, trigger])
             trigger_text = self._content(
@@ -259,13 +297,20 @@ class AgentRuntime:
                 ]
             ):
                 funcs.append(skill_tools.make_use_skill_tool(skill_names))
+            voice_ui = conv.origin == "voice_quick" or bool(
+                (conv.settings or {}).get("voice_session")
+            )
             for name, tool_fn in (
                 ("end_skill", skill_tools.end_skill),
                 ("read_skill_file", skill_tools.read_skill_file),
                 ("save_skill", skill_tools.save_skill),
                 ("ask_user_question", tools.ask_user_question),
+                ("show_checklist", tools.show_checklist),
                 ("run_subagent", tools.run_subagent),
             ):
+                # Checklist UI has no voice rendering.
+                if name == "show_checklist" and voice_ui:
+                    continue
                 if name in allowed_names:
                     funcs.append(tool_fn)
             capabilities = tools.allowed_capabilities(user.role.permissions)
@@ -296,6 +341,16 @@ class AgentRuntime:
                 conversation_id=conv.id,
                 trigger_seq=trigger.seq,
                 subagent_slots=asyncio.Semaphore(5),
+                skill_name=(
+                    ephemeral_state[0].name
+                    if ephemeral_state is not None
+                    else (active[0].name if active is not None else None)
+                ),
+                skill_id=(
+                    ephemeral_state[0].id
+                    if ephemeral_state is not None
+                    else (active[0].id if active is not None else None)
+                ),
             )
 
             run = Run(
@@ -309,11 +364,24 @@ class AgentRuntime:
             await session.commit()
             run_id = run.id
             deps.run_id = run_id
-            await self._run_status(conv.id, run_id, "running", model=run.model)
+            if not hidden_reply:
+                await self._run_status(
+                    conv.id, run_id, "running", model=run.model
+                )
+
+            async def emit_run_event(
+                event_type: str, conversation_id: int, data: dict[str, Any]
+            ) -> None:
+                if not hidden_reply:
+                    await self._emit(event_type, conversation_id, data)
 
         if bound is None:
             await self._finish(
-                run_id, conv.id, "failed", error="no chat model bound"
+                run_id,
+                conv.id,
+                "failed",
+                error="no chat model bound",
+                quiet=hidden_reply,
             )
             return
 
@@ -355,7 +423,7 @@ class AgentRuntime:
                     else:
                         delta_text = ""
                     if delta_text:
-                        await self._emit(
+                        await emit_run_event(
                             "message.delta",
                             conv.id,
                             {"run_id": run_id, "text": delta_text},
@@ -376,7 +444,7 @@ class AgentRuntime:
                                 tp.signature
                             )
                         run_parts.append(entry)
-                        await self._emit(
+                        await emit_run_event(
                             "message.thinking",
                             conv.id,
                             {
@@ -402,7 +470,7 @@ class AgentRuntime:
                                     last.get("signature", "")
                                 ) + td.signature_delta
                         if td.content_delta:
-                            await self._emit(
+                            await emit_run_event(
                                 "message.thinking",
                                 conv.id,
                                 {
@@ -420,7 +488,7 @@ class AgentRuntime:
                                 "args": to_jsonable_python(call.args),
                             }
                         )
-                        await self._emit(
+                        await emit_run_event(
                             "message.tool",
                             conv.id,
                             {
@@ -447,7 +515,7 @@ class AgentRuntime:
                                 "native": True,
                             }
                         )
-                        await self._emit(
+                        await emit_run_event(
                             "message.tool",
                             conv.id,
                             {
@@ -472,7 +540,7 @@ class AgentRuntime:
                                 "native": True,
                             }
                         )
-                        await self._emit(
+                        await emit_run_event(
                             "message.tool",
                             conv.id,
                             {
@@ -497,7 +565,7 @@ class AgentRuntime:
                         if retry:
                             ret["retry"] = True
                         run_parts.append(ret)
-                        await self._emit(
+                        await emit_run_event(
                             "message.tool",
                             conv.id,
                             {
@@ -515,7 +583,9 @@ class AgentRuntime:
                         usage = dataclasses.asdict(event.result.usage)
         except Exception as exc:
             log.exception("run %s failed", run_id)
-            await self._finish(run_id, conv.id, "failed", error=str(exc))
+            await self._finish(
+                run_id, conv.id, "failed", error=str(exc), quiet=hidden_reply
+            )
             await self._save_reply(
                 session_maker,
                 conv.id,
@@ -523,10 +593,14 @@ class AgentRuntime:
                 [*run_parts, {"type": "text", "text": ERROR_TEXT}],
                 deps.documents,
                 deps.choices,
+                deps.checklists,
+                hidden=hidden_reply,
             )
             return
 
-        await self._finish(run_id, conv.id, "done", usage=usage)
+        await self._finish(
+            run_id, conv.id, "done", usage=usage, quiet=hidden_reply
+        )
         stored_parts = (
             agent_history.serialize_parts(run_result.new_messages())
             if run_result is not None
@@ -544,9 +618,12 @@ class AgentRuntime:
             stored_parts,
             deps.documents,
             deps.choices,
+            deps.checklists,
+            hidden=hidden_reply,
         )
-        await self._ensure_title(conv.id, user, trigger.parts)
-        await self._maybe_tts_reply(conv.id, user, output)
+        if not hidden_reply:
+            await self._ensure_title(conv.id, user, trigger.parts)
+            await self._maybe_tts_reply(conv.id, user, output)
 
     async def _member_names(
         self, session: AsyncSession, conversation_id: int
@@ -771,6 +848,21 @@ class AgentRuntime:
                         )
                 else:
                     chunks.append(str(p.get("text", "")))
+                cl_ans = p.get("checklist_answer")
+                if isinstance(cl_ans, dict):
+                    state = {
+                        "items": {
+                            str(i.get("id")): bool(i.get("checked"))
+                            for i in cl_ans.get("items") or []
+                        },
+                        "changed": [
+                            str(i.get("id"))
+                            for i in cl_ans.get("changed") or []
+                        ],
+                    }
+                    chunks.append(
+                        f"[чек-лист: {json.dumps(state, ensure_ascii=False)}]"
+                    )
                 if speaker_label is None:
                     sp = p.get("speaker")
                     if isinstance(sp, dict):
@@ -790,6 +882,7 @@ class AgentRuntime:
                 "compaction",
                 "mention",
                 "choice",
+                "checklist",
             ):
                 continue
             elif (aid := media_service.part_attachment_id(p)) is not None and (
@@ -840,6 +933,7 @@ class AgentRuntime:
         status: str,
         usage: dict[str, Any] | None = None,
         error: str | None = None,
+        quiet: bool = False,
     ) -> None:
         async with get_sessionmaker()() as session:
             run = await session.get(Run, run_id)
@@ -850,7 +944,10 @@ class AgentRuntime:
                     run.usage = usage
                 run.error = error
                 await session.commit()
-        await self._run_status(conversation_id, run_id, status, error=error)
+        if not quiet:
+            await self._run_status(
+                conversation_id, run_id, status, error=error
+            )
 
     async def _save_reply(
         self,
@@ -860,6 +957,8 @@ class AgentRuntime:
         parts: list[dict[str, Any]],
         document_parts: list[dict[str, Any]] | None = None,
         choice_parts: list[dict[str, Any]] | None = None,
+        checklist_parts: list[dict[str, Any]] | None = None,
+        hidden: bool = False,
     ) -> None:
         async with session_maker() as session:
             conv = await session.get(Conversation, conversation_id)
@@ -868,13 +967,22 @@ class AgentRuntime:
             msg = await conversations.post_assistant_message(
                 session,
                 conv,
-                [*parts, *(document_parts or []), *(choice_parts or [])],
+                [
+                    *parts,
+                    *(document_parts or []),
+                    *(choice_parts or []),
+                    *(checklist_parts or []),
+                ],
                 run_id,
+                hidden=hidden,
             )
             out = _message_dict(msg)
-        await self._hub.publish(
-            ChannelEvent("message.created", conversation_id, {"message": out})
-        )
+        if not hidden:
+            await self._hub.publish(
+                ChannelEvent(
+                    "message.created", conversation_id, {"message": out}
+                )
+            )
         memory_indexer.kick()
 
     async def _maybe_tts_reply(
@@ -971,6 +1079,45 @@ def _is_scheduled(parts: list[dict[str, Any]]) -> bool:
     )
 
 
+def _is_checklist_reply(parts: list[dict[str, Any]]) -> bool:
+    return any(
+        p.get("type") == "text" and isinstance(p.get("checklist_answer"), dict)
+        for p in parts
+    )
+
+
+def _is_interactive_reply(parts: list[dict[str, Any]]) -> bool:
+    """A choice/checklist answer message counts as a mention and continues
+    the flow that produced the part."""
+    return any(
+        p.get("type") == "text"
+        and isinstance(
+            p.get("choice_answer") or p.get("checklist_answer"), dict
+        )
+        for p in parts
+    )
+
+
+def _answer_skill(
+    parts: list[dict[str, Any]],
+) -> tuple[int | None, str | None]:
+    """(skill_id, skill_name) recorded on the interactive part an answer
+    refers to; legacy parts carry only the name."""
+    for p in parts:
+        if p.get("type") != "text":
+            continue
+        for key in ("checklist_answer", "choice_answer"):
+            ans = p.get(key)
+            if not isinstance(ans, dict):
+                continue
+            sid = ans.get("skill_id")
+            if isinstance(sid, int) and not isinstance(sid, bool):
+                return sid, None
+            if ans.get("skill"):
+                return None, str(ans["skill"])
+    return None, None
+
+
 async def _speaker_endpoint(
     session: AsyncSession,
 ) -> tuple[str, str | None] | None:
@@ -1015,6 +1162,7 @@ def _message_dict(m: Message) -> dict[str, Any]:
         "parts": m.parts,
         "run_id": m.run_id,
         "source_channel": m.source_channel,
+        "hidden": m.hidden,
         "client_msg_id": m.client_msg_id,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }

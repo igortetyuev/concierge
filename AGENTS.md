@@ -332,8 +332,9 @@ stop, skills, start, new, sessions, archive, voice, help. Файлы скилл�
 - модель — `use_skill` (каталог `[Скиллы]` в промпте, если инструмент разрешён).
 Снятие — `end_skill`, `/stop` (не создаёт Run), `DELETE /conversations/{cid}/skill`
 или крестик chip в шапке; удалённый/выключенный скилл снимается молча.
-Команда, пришедшая под локом рана, переочередивается с `wait=True`
-(`runtime.maybe_run` → `_is_skill_command`). `/имя` и `/stop` считаются
+Команда или интерактивный ответ (кнопка `choice`, сабмит чек-листа),
+пришедшие под локом рана, переочередиваются с `wait=True`
+(`runtime.maybe_run` → `_must_requeue`). `/имя` и `/stop` считаются
 обращением в `reply_mode=mention`.
 Подстановки в теле: `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N`, `${CLAUDE_SKILL_DIR}`
 → `skill:<name>`; нет плейсхолдера — дописывается `ARGUMENTS: …`.
@@ -353,7 +354,10 @@ Bash/Edit/Write недоступны (правки кода — `delegate_coding
 `ch:{message_id}:{idx}`, только single-question single-select) либо нумерованный
 текст. Ответ — `POST …/messages/{id}/answer` → `skills/choices.py`
 `answer_choice`: user-сообщение с `choice_answer` + `message.updated` на исходное
-(`answered: true`) + новый ран. Свободный текст — тоже ответ.
+(`answered: true`) + новый ран. Свободный текст — тоже ответ. Ответ считается
+mention в `reply_mode=mention` и пропускает фразы-триггеры; на парт записывается
+`skill`/`skill_id` показавшего вопрос скилла — при ране ответа скилл резолвится
+по id среди скиллов ответившего (`_answer_skill`).
 `run_subagent(goal, context, model=default|fast)` — вложенный Agent без истории
 (binding chat / chat_fast, токены в `ctx.usage`), инструменты = права роли минус
 `SUBAGENT_EXCLUDED` (чат-мутации, рекурсия, планировщик), глубина 1, до 5
@@ -364,6 +368,67 @@ REST: `GET /skills` (доступные), `/skills/mine` CRUD + `/import` + `/{i
 Импорт `.md`/`.zip` (SKILL.md в корне или одной папке; не-UTF8 пропускается
 с отчётом), экспорт — `<name>/…`. Лимиты: SKILL.md ≤64 КБ, ≤100 личных,
 каталог ≤50 скиллов в промпте.
+
+## Чек-листы (show_checklist)
+
+`show_checklist(items, title, columns, submit_label)` — динамический
+инструмент (`agent/tools.py`, в `DYNAMIC_TOOLS`, гейтинг `tools.allow`
+роли): интерактивный список с галочками, 1–50 пунктов, один чек-лист на
+ран, `id` пункта по умолчанию "1".."n" (уникальные, ≤64). Два режима:
+list (`columns=None` — только `item.text`) и table (`columns` ≤6 +
+`item.cells` на каждый пункт; чекбокс — первой колонкой, ячейки
+рендерятся markdown). Не регистрируется в голосовых сессиях
+(`voice_quick`/`voice_session` — UI нет). Инструмент кладёт в ответное
+сообщение парт `{"type":"checklist", checklist_id, title, columns, items,
+submit_label, skill, skill_id, submissions, submitted_by, submitted_at}`;
+`skill`/`skill_id` — скилл, показавший лист (нужен для re-apply на ответе).
+
+Отправка: PWA — `ChecklistPart.tsx` (черновик галочек; кнопка остаётся
+активной и после submit для повторных правок, «Отправлено ×N») →
+`POST /conversations/{cid}/messages/{mid}/checklist` `{checklist_id,
+checked:[ids]}` (201, переотправка разрешена; повторная отправка того же
+состояния дедупится — возвращает прошлый ответ, нового рана нет). Сабмиты
+принимаются только у сообщений ассистента и только в активной сессии —
+и в PWA, и в TG (`_checklist_part`). Telegram — `_send_checklist`
+шлёт нумерованный список (только `item.text`, cells не показываются;
+длинный список режется на чанки, клавиатура — на последнем) +
+клавиатуру `checklist_markup`: toggle `cl:{mid}:{idx}:{maskhex}` (бит i =
+item i checked; только edit_markup, без рана) и submit `cs:{mid}:{maskhex}`;
+после сабмита клавиатура перерисовывается по сохранённому состоянию.
+Общий код — `skills/checklists.py submit_checklist`: блокирует сообщение
+FOR UPDATE, обновляет парт на
+месте (checked, ++submissions, submitted_by/at → `message.updated`),
+постит user-сообщение «Отмечено в «title»: ☑ …/☐ …» с полем
+`checklist_answer` `{message_id, checklist_id, skill, skill_id,
+items:[{id,checked}], changed:[{id,checked}]}` (dedup
+`cl:{mid}:{submissions}:{checklist_id[:8]}`) и планирует ран. `changed` —
+diff против сохранённого состояния (первый submit — против начального).
+Такое user-сообщение и ответ ассистента на него — служебные
+(`messages.hidden`, миграция 0017): остаются в БД и в истории для агента,
+но не отдаются REST-лентой/поиском, не пересылаются и не рассылаются
+realtime-событиями (видно только обновление самого чек-листа).
+
+Ран по ответу чек-листа — интерактивный reply: считается mention
+(`_is_interactive_reply`), пропускает фразы-триггеры, ephemeral-скилл с
+парта re-apply (`_answer_skill`) — резолвится по `skill_id` среди скиллов
+ОТВЕТИВШЕГО пользователя (имя — фолбэк для старых партов), а не того, кто
+показал лист. В промпт попадает строка
+`[чек-лист: {"items":{"id":bool,…},"changed":["id",…]}]` — changed это
+id'шники, новое состояние читается из items.
+
+Применение — домашка: ephemeral-скилл `school` показывает
+`sandbox.school_homework` чек-листом; у таблицы нет стабильных id
+(push.py пересобирает её TRUNCATE+INSERT), поэтому `id` пункта =
+`hw_id`, вычисляется в SQL как
+`left(md5(date::text||'|'||coalesce(subject,'')||'|'||coalesce(text,'')),10)`
+и копируется; дубли (одинаковые date+subject+text) дедупятся
+`DISTINCT ON (hw_id)`. Ответы складываются append-only в
+`sandbox.school_homework_done(hw_id, date, subject, done, marked_by,
+marked_at)` через `analytics_import_rows`: таблица заранее не создана —
+первый append создаёт её с угаданными типами (date/marked_at текст →
+строгие ISO-форматы, сортировка лексикографическая); актуальное состояние
+— самая свежая строка по marked_at. Правка текста задания учителем меняет
+hw_id → отметка теряется.
 
 ## Лог сессии и компакшен
 
@@ -442,8 +507,10 @@ start_time, subject_odd/even — чередование по чётности IS
 `school_homework` (date — на какой день задано, text, materials jsonb),
 `school_grades` (mark/value/weight/work_type/…, class_stats jsonb),
 `school_quarters`, `school_meta` (generated_at/loaded_at — свежесть).
-Схема описана агенту в общем скилле `school` (ephemeral, триггеры
-«домашка»/«оценки»/… и /школа).
+Отдельно `school_homework_done` — выгружается не myschool, а пишется самим
+консьержем (append-only отметки «домашка сделана» из чек-листа, см.
+«Чек-листы»). Схема описана агенту в общем скилле `school` (ephemeral,
+триггеры «домашка»/«оценки»/… и /школа).
 
 ## MCP-серверы с браузерным доступом (ozon, browserdata)
 
@@ -534,7 +601,9 @@ code-agents, Telegram, журнал runs/затрат и аудит-лог. Ау
 `@concierge`, `@{agent.name}`) в тексте. Для транскрибированных голосовых
 партов (`"transcribed": true` — колонка esp32home, hold-to-talk, голосовые в
 Telegram) токены матчатся без `@`: фраза «Консьерж, …» триггерит, обычная
-речь — нет (сообщение всё равно сохраняется и распознаётся). Сессия
+речь — нет (сообщение всё равно сохраняется и распознаётся). Ответы на
+интерактивные парты (кнопка `ask_user_question`, сабмит чек-листа) тоже
+считаются mention. Сессия
 «Гостиная» колонки — в `mention`.
 
 ## Голосовая линия (voice_session)

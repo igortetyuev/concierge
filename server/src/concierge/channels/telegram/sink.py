@@ -18,11 +18,17 @@ from concierge.auth.models import User
 from concierge.channels.hub import ChannelEvent
 from concierge.channels.telegram.format import (
     MAX_LEN,
+    escape_mdv2,
     md_to_mdv2,
     split_telegram,
 )
 from concierge.channels.telegram.models import TelegramMessage
-from concierge.channels.telegram.service import TelegramOutbox
+from concierge.channels.telegram.service import (
+    TelegramOutbox,
+    _clip,
+    checklist_markup,
+    checklist_mask,
+)
 from concierge.conversations.models import Conversation, Message, Run
 from concierge.core.config import get_settings
 from concierge.core.db import get_sessionmaker
@@ -196,6 +202,7 @@ class TelegramSink:
             await self._record(st.tg_msg_id, message.get("id"))
         await self._send_part_attachments(message)
         await self._send_choice(message)
+        await self._send_checklist(message)
         if isinstance(run_id, int):
             await self._maybe_voice_reply(message)
 
@@ -254,19 +261,67 @@ class TelegramSink:
             )
             await self._record(tg_id, message.get("id"))
 
-    async def _send_mdv2(self, chunk_mdv2: str, chunk_raw: str) -> int:
+    async def _send_checklist(self, message: dict[str, Any]) -> None:
+        """A `checklist` part: numbered listing plus a toggle keyboard
+        (see `service.checklist_markup` for the callback-data format)."""
+        part = next(
+            (
+                p
+                for p in message.get("parts") or []
+                if p.get("type") == "checklist"
+            ),
+            None,
+        )
+        items = (part or {}).get("items") or []
+        if part is None or not items:
+            return
+        mid = message.get("id")
+        markup = checklist_markup(mid, part, checklist_mask(part))
+        title = _clip(str(part.get("title") or "Чек-лист"), 200)
+        texts = [_clip(str(it.get("text") or ""), 200) for it in items]
+        # The listing can outgrow one message (50 long items > 4096):
+        # split it into (mdv2, raw) chunk pairs; the keyboard rides the last.
+        pairs: list[tuple[str, str]] = []
+        cur_m = f"*{escape_mdv2(title)}*"
+        cur_r = title
+        for i, t in enumerate(texts):
+            m_line = f"{i + 1}\\. {escape_mdv2(t)}"
+            r_line = f"{i + 1}. {t}"
+            if len(cur_m) + 1 + len(m_line) > MAX_LEN:
+                pairs.append((cur_m, cur_r))
+                cur_m, cur_r = m_line, r_line
+            else:
+                cur_m += "\n" + m_line
+                cur_r += "\n" + r_line
+        pairs.append((cur_m, cur_r))
+        for i, (chunk_mdv2, chunk_raw) in enumerate(pairs):
+            tg_id = await self._send_mdv2(
+                chunk_mdv2,
+                chunk_raw,
+                reply_markup=markup if i == len(pairs) - 1 else None,
+            )
+            await self._record(tg_id, mid)
+
+    async def _send_mdv2(
+        self,
+        chunk_mdv2: str,
+        chunk_raw: str,
+        reply_markup: list[list[tuple[str, str]]] | None = None,
+    ) -> int:
         try:
             return await self._outbox.send(
                 self.chat_id,
                 chunk_mdv2,
                 thread_id=self.thread_id,
                 parse_mode="MarkdownV2",
+                reply_markup=reply_markup,
             )
         except Exception:
             return await self._outbox.send(
                 self.chat_id,
                 chunk_raw,
                 thread_id=self.thread_id,
+                reply_markup=reply_markup,
             )
 
     async def _mirror(self, message: dict[str, Any]) -> None:
