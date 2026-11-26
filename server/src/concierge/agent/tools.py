@@ -767,8 +767,9 @@ async def show_checklist(
     `cells` on every item for table mode — the two modes can't mix. `id`
     defaults to "1".."n". In table mode `text` is still required: it is the
     one-line summary used where tables can't render (Telegram, history,
-    render_state). The user ticks boxes and presses `submit_label`;
-    the checked state arrives as the next user message — finish your turn
+    render_state). In the web app every tick is submitted automatically
+    (no submit button); in Telegram the user presses `submit_label`.
+    The checked state arrives as the next user message — finish your turn
     briefly after calling, don't list the items again.
     """
     if ctx.deps.checklists:

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { apiClient } from '../lib/api'
 import type { MessagePart } from '../lib/api'
@@ -21,9 +21,18 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
   return a.size === b.size && [...a].every((x) => b.has(x))
 }
 
-/** `checklist` part (show_checklist): tickable list or table + a submit
- * button. Resubmission is allowed — the stored state comes back via
- * `message.updated`, which resets the draft below. */
+/** `checklist` part (show_checklist): tickable list or table, no submit
+ * button — checkbox changes auto-submit the full state after a short
+ * debounce (a burst of clicks batches into one submission).
+ *
+ * Sync model: the server state (part items) is the source of truth and
+ * arrives to every open window/device via `message.updated`; local ticks
+ * are optimistic deltas in `pending` overlaid on top of it. A delta is
+ * dropped once the echoed server state confirms it, so a late echo of an
+ * older submission can neither flicker the checkbox nor eat a click, and
+ * concurrent edits from another device merge unless they hit the same
+ * item (last writer wins there). Submissions are chained so concurrent
+ * ones can't reach the server out of order and regress the state. */
 export default function ChecklistPart({
   part,
   convId,
@@ -36,61 +45,99 @@ export default function ChecklistPart({
   const items = (part.items as ChecklistItemData[] | undefined) ?? []
   const columns = (part.columns as string[] | undefined) ?? []
   const submissions = Number(part.submissions ?? 0)
-  // Signature of the stored checkbox state: changes on every submission
-  // (ours reflected via message.updated, or another client's) → reset draft.
   const storeKey = `${submissions}:${items
     .map((it) => `${it.id}=${it.checked === true ? 1 : 0}`)
     .join(',')}`
-  const [draft, setDraft] = useState<Set<string>>(() => checkedIds(items))
-  const [key, setKey] = useState(storeKey)
-  const [sent, setSent] = useState<Set<string> | null>(null)
-  const [optimistic, setOptimistic] = useState(0)
-  const [busy, setBusy] = useState(false)
+  const serverChecked = checkedIds(items)
+  const [pending, setPending] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  )
   const [error, setError] = useState('')
 
-  if (key !== storeKey) {
-    setKey(storeKey)
-    setDraft(checkedIds(items))
-    setSent(null)
-    setOptimistic(0)
+  const interactive = convId != null && messageId != null
+  const pendingRef = useRef(pending)
+  const serverRef = useRef(serverChecked)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chain = useRef<Promise<void>>(Promise.resolve())
+  // Submits fired but not yet acknowledged by the server. While non-zero
+  // the last echo may lag behind the real server state, so a net-zero
+  // overlay must still be sent (the server may hold the opposite value
+  // from the in-flight submission).
+  const inFlight = useRef(0)
+
+  useEffect(() => {
+    pendingRef.current = pending
+    serverRef.current = serverChecked
+  })
+
+  // Drop optimistic deltas the echoed server state now confirms
+  // (state adjustment during render, keyed to the stored-state signature).
+  const [pruneKey, setPruneKey] = useState(storeKey)
+  if (pruneKey !== storeKey) {
+    setPruneKey(storeKey)
+    if (pending.size > 0) {
+      const next = new Map<string, boolean>()
+      let changed = false
+      for (const [id, v] of pending) {
+        if (serverChecked.has(id) === v) changed = true
+        else next.set(id, v)
+      }
+      if (changed) setPending(next)
+    }
   }
 
-  const interactive = convId != null && messageId != null
-  const baseline = sent ?? checkedIds(items)
-  const everSubmitted = submissions > 0 || sent != null
-  // Stored count wins once message.updated lands; before that the submit's
-  // own +1 keeps the counter right (no double-count on the echo).
-  const submitCount = Math.max(submissions, optimistic)
+  const display = new Set(serverChecked)
+  for (const [id, v] of pending) {
+    if (v) display.add(id)
+    else display.delete(id)
+  }
 
-  function toggle(id: string) {
-    setDraft((cur) => {
-      const next = new Set(cur)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
+  function fireSubmit() {
+    timer.current = null
+    if (convId == null || messageId == null) return
+    const state = new Set(serverRef.current)
+    for (const [id, v] of pendingRef.current) {
+      if (v) state.add(id)
+      else state.delete(id)
+    }
+    // Net-zero round trip (ticked and unticked with nothing outstanding):
+    // nothing to tell the agent.
+    if (sameSet(state, serverRef.current) && inFlight.current === 0) return
+    const checked = [...state]
+    const checklistId = String(part.checklist_id ?? '')
+    inFlight.current += 1
+    chain.current = chain.current.then(async () => {
+      try {
+        await apiClient.submitChecklist(convId, messageId, checklistId, checked)
+      } catch {
+        setError('Не удалось отправить')
+      } finally {
+        inFlight.current -= 1
+      }
     })
   }
 
-  async function submit() {
-    if (!interactive || convId == null || messageId == null) return
-    setBusy(true)
-    setError('')
-    try {
-      await apiClient.submitChecklist(
-        convId,
-        messageId,
-        String(part.checklist_id ?? ''),
-        [...draft],
-      )
-      setSent(new Set(draft))
-      if (!everSubmitted || !sameSet(draft, baseline)) {
-        setOptimistic((cur) => Math.max(cur, submissions) + 1)
+  // Flush a pending submission on unmount (e.g. quick navigation away)
+  // instead of dropping the last click.
+  const fireRef = useRef(fireSubmit)
+  useEffect(() => {
+    fireRef.current = fireSubmit
+  })
+  useEffect(() => {
+    return () => {
+      if (timer.current != null) {
+        clearTimeout(timer.current)
+        fireRef.current()
       }
-    } catch {
-      setError('Не удалось отправить')
-    } finally {
-      setBusy(false)
     }
+  }, [])
+
+  function toggle(id: string) {
+    if (!interactive) return
+    setPending((cur) => new Map(cur).set(id, !display.has(id)))
+    setError('')
+    if (timer.current != null) clearTimeout(timer.current)
+    timer.current = setTimeout(() => fireRef.current(), 600)
   }
 
   const box = (it: ChecklistItemData, label?: string) => {
@@ -98,8 +145,8 @@ export default function ChecklistPart({
     return (
       <input
         type="checkbox"
-        checked={draft.has(id)}
-        disabled={!interactive || busy}
+        checked={display.has(id)}
+        disabled={!interactive}
         aria-label={label}
         onChange={() => toggle(id)}
       />
@@ -126,7 +173,7 @@ export default function ChecklistPart({
               {items.map((it) => (
                 <tr
                   key={String(it.id)}
-                  className={draft.has(String(it.id)) ? 'checked' : ''}
+                  className={display.has(String(it.id)) ? 'checked' : ''}
                 >
                   <td className="checklist-check">
                     {box(it, String(it.text || it.id))}
@@ -146,7 +193,7 @@ export default function ChecklistPart({
           {items.map((it) => (
             <li key={String(it.id)}>
               <label
-                className={`checklist-item${draft.has(String(it.id)) ? ' checked' : ''}`}
+                className={`checklist-item${display.has(String(it.id)) ? ' checked' : ''}`}
               >
                 {box(it)}
                 <span>{it.text}</span>
@@ -155,13 +202,8 @@ export default function ChecklistPart({
           ))}
         </ul>
       )}
-      {interactive && (
-        <button className="btn primary" onClick={() => void submit()}>
-          {String(part.submit_label || 'Отправить')}
-        </button>
-      )}
-      {submitCount > 0 && (
-        <span className="checklist-note muted">Отправлено ×{submitCount}</span>
+      {submissions > 0 && (
+        <span className="checklist-note muted">Отправлено ×{submissions}</span>
       )}
       {error && <div className="auth-error">{error}</div>}
     </div>
