@@ -437,9 +437,13 @@ class TelegramSink:
             )
             if not requested:
                 return
-            audio = await tts.synthesize_speech(
-                session, user, await tts.spoken_version(session, user, text)
+            override = tts.spoken_override(message.get("parts") or [])
+            spoken = (
+                tts.speechify(override)[: tts.TTS_TEXT_MAX]
+                if override is not None
+                else await tts.spoken_version(session, user, text)
             )
+            audio = await tts.synthesize_speech(session, user, spoken)
         if audio is None:
             return
         data, mime = audio

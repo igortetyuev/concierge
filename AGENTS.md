@@ -453,6 +453,203 @@ marked_at)` через `analytics_import_rows`: таблица заранее н
 — самая свежая строка по marked_at. Правка текста задания учителем меняет
 hw_id → отметка теряется.
 
+## Списки покупок (purchases/)
+
+Персональные списки покупок с семейной видимостью. Домен —
+`server/src/concierge/purchases/` (`models.py`, `units.py`, `categories.py`,
+`service.py`, `render.py`, `tools.py`, `default_skill.py`), сознательно независим от
+agent runtime: нормализация, дедупликация, права и даты детерминированы,
+понимание речи остаётся на модели/скилле. Схема — миграция 0018:
+`purchase_lists` — одна строка на `(owner_id, store_key)` (UNIQUE; пустой
+`store_key` = общий немагазинный список, заголовок вычисляется: «Покупки»
+или «Купить в {store_name}»), `purchase_list_members` `(list_id, user_id)`
+с role `viewer`/`editor`, `purchase_items` (canonical_key, category,
+quantity Numeric, unit, unit_dimension, status `pending`/`bought`,
+`planned_for` Date, price_amount/currency/kind, assigned_to/assigned_by,
+added_by, bought_by/bought_at), `purchase_contexts` — текущий магазин
+пользователя.
+
+Видимость и права (`service.access_level`): владелец — полные права без
+member-строки; не-guest члены семьи видят списки друг друга read-only
+(access `family`) — мутировать чужой список без явного шаринга нельзя,
+family-видимость никогда не делает список целью мутации; явный member
+`editor` читает/мутирует, но не шарит; `viewer` — только чтение (важно
+в основном для гостей: это их единственный путь доступа); назначенный
+исполнитель (access `assignee`) видит и может отмечать/править только
+свои позиции в чужом списке, но `remove` требует owner/editor. Если у
+исполнителя есть собственный список с тем же магазином, name-based
+mark/update сначала ищет в resolved target, а при промахе использует ровно
+одну назначенную ему позицию в том же store_key (несколько — `ambiguous_item`).
+Mutation-ошибка `denied` никогда не возвращает найденную позицию/список, чтобы
+exact-id probing не раскрывал чужие названия, количества, цены и metadata.
+Гости
+не имеют неявного доступа, встроенная роль guest держит
+`tools.deny=["*"]`. Шаринг/отзыв — только владелец, инструмент
+`purchase_share` (users по именам, `mode` по умолчанию `editor`,
+`revoke=true` снимает доступ); неоднозначные имена возвращают
+`candidates` для `ask_user_question`. Назначение — поле `assignee` в
+`purchase_update` при add («Тихон должен купить хлеб»).
+
+Магазинный контекст: «я в пятерочке» → `purchase_store(set)`, «я ушел/
+ушла» → `clear`, «где я» → `current`. Контекст живёт в
+`purchase_contexts` и протухает через 4 часа от `updated_at`
+(`CONTEXT_TTL`; строка не удаляется, просто игнорируется). Разрешение
+цели мутации: явный `store` важнее контекста, `general=true` — общий
+список, иначе контекст/общий; предпочитается собственный список, ровно
+один расшаренный editor-список может быть fallback, несколько —
+структурная ошибка `ambiguous` с candidates (не traceback). Ключи
+магазинов канонизируются: `спар`→`SPAR`, `пятерочка`/`пятёрочка`→
+`Пятёрочка`, плюс Магнит/Лента/Ашан. `mark_bought` с неизвестным именем
+создаёт позицию сразу купленной в СОБСТВЕННОМ списке звонящего
+(`own_only` — никогда в shared fallback): явный/контекст-магазин, иначе
+общий.
+
+Даты: `planned_for` по умолчанию — сегодня в `settings.timezone`
+(`family_today`, тот же паттерн, что у планировщика); запросы «на
+сегодня» включают `planned_for <= today` — просроченное не пропадает;
+будущее скрыто без `include_future=true`; `for_date` в `purchase_query`
+сдвигает горизонт («что купить завтра»). Разбор «завтра/в пятницу» —
+на модели по контексту `[Сейчас]`, сервер принимает готовую дату.
+
+Единицы (`units.py`): алиасы шт/г/кг/мл/л/мм/см/м и упаковки
+(бутылка/упаковка/пачка/коробка/банка/пакет/рулон/тюбик); неизвестные
+единицы сохраняются как custom с размерностью `unit:<name>` и ни с чем
+не мерджатся. Конверсия только внутри размерности mass (г↔кг), volume
+(мл↔л), length (мм↔см↔м); упаковки count-like, но без факторов (бутылка
+≠ штуки). Внутри — `Decimal`. Дедупликация add рассматривает pending-позиции с тем
+же `canonical_key + planned_for + assignee` внутри списка, но автоматически
+мерджит только совместимые единицы той же `unit_dimension` в единицу
+существующей позиции (500 г + 0.5 кг → 1 кг). Если существующая позиция
+только в другой размерности, явный add по умолчанию не создаёт теневой дубль,
+а возвращает структурную ошибку `unit_mismatch` с существующей позицией как
+кандидатом и вариантом «добавить отдельной строкой»; после явного уточнения
+пользователя tool/service могут передать `allow_incompatible_unit=true`, и тогда
+несовместимая размерность сознательно сохраняется отдельной строкой по ключу
+`canonical_key + unit_dimension + planned_for + assignee`. Этот opt-in не мешает
+same-dimensional convertible merge. Неконвертируемые упаковки внутри
+count-размерности (бутылка/упаковка) по-прежнему могут быть отдельными строками.
+Конкурентные add и read-modify-write мутации
+сериализуются `SELECT … FOR UPDATE` на строке финального списка (после lock
+позиция перечитывается с `populate_existing`); первое создание одной и той же
+`(owner_id, store_key)` строки дополнительно сходится через unique constraint +
+nested rollback/retry вместо проброса IntegrityError; первый `purchase_contexts`
+insert для user_id использует тот же conflict/retry паттерн, затем применяет
+last-writer update; первый duplicate `purchase_list_members` insert при шаринге
+тоже сходится через conflict/retry. Перед созданием неизвестной уже купленной
+позиции name-based `mark_bought` блокирует финальный собственный/target-список
+и повторно проверяет pending/bought под этим lock, поэтому конкурентный
+identical call становится transition/idempotent retry, а не вторым insert.
+Если quantity и unit не
+переданы вовсе («закончились яблоки») и ровно одна такая pending-позиция уже
+есть на ту же дату/исполнителя, add считается duplicate/no-op и возвращает
+существующую строку без изменения quantity/unit/status; если в таком повторе явно
+передана цена, price/currency/price_kind мерджатся в существующую строку.
+Несколько разновидностей — `ambiguous_item` с candidates.
+Явное `quantity=1, unit="шт"` — уже не безразмерное повторение, а потенциальный
+`unit_mismatch`.
+`canonical_key` — lowercase, ё→е, нормализация пунктуации + синонимы
+(картошка→картофель). Цены: `price_kind` `unit` («по 80 рублей») /
+`total` («за 150 рублей»), валюта по умолчанию RUB; цена применяется при
+add/merge и mark_bought. Дефолты для НОВОЙ позиции: quantity=1, unit=`шт`.
+Quantity/price и результаты merge/increase/multiply/divide ограничены размерностью
+Numeric колонок (quantity ≤ 999999999.999, price ≤ 9999999999.99); переполнение
+возвращает structured `invalid_quantity`, а не DB error. Quantity детерминированно
+округляется к scale 3 (`ROUND_HALF_UP`), price — к scale 2 (`ROUND_HALF_UP`)
+до записи и ответа. Открытые unit
+нормализуются, но не должны превышать `String(32)` вместе с dimension
+`unit:<name>` в `String(48)`; нарушение — structured `invalid_unit`, без
+молчаливого truncate.
+
+Инструменты (регистрация в `CORE_TOOLS`, гейтинг `tools.allow/deny`
+роли): `purchase_update` — пачка операций add/set/increase/decrease/
+multiply/divide/remove/mark_bought/mark_pending, позиция адресуется
+точным `item_id` или именем; необязательный точный `list_id` выбирает editable
+список после list-ambiguity и переопределяет store/context/general, но не обходит
+прав доступа. Точный повтор item-id перехода в уже достигнутый
+status (`mark_bought`/`mark_pending`) — no-op success после проверки доступа.
+Batch ограничен 50 операциями; превышение — batch-level `too_many_operations`
+до применения любой операции. Результат — структурный per-operation
+`results` с errors/candidates. Ошибки неоднозначности (`ambiguous`,
+`ambiguous_item`, `ambiguous_user`, а также `unit_mismatch`) дополнительно
+несут machine-readable scaffold `next_action="ask_user_question"` и
+`suggested_question` с кратким вопросом/вариантами, построенными только из
+фактических полей кандидатов; cross-list item candidates включают owner display
+name в payload/description, чтобы одинаковые назначенные позиции различались.
+Внутри одного agent-run `purchase_update`
+имеет идемпотентную защиту от циклов: точный повтор того же batch возвращает
+кэшированный первый результат с `deduplicated=true` без повторной мутации,
+а после 3 вызовов любой следующий возвращает terminal-ошибку
+`purchase_update_loop_detected` с `terminal=true` и instruction не вызывать
+инструмент повторно в этом ходу; состояние живёт только в per-run `ToolDeps` и
+не попадает в БД, поэтому новое сообщение пользователя начинается с чистого
+счётчика. Для слабых локальных моделей `purchase_update` также применяет
+консервативный server-side fallback по исходному `trigger_text`: заполняет
+отсутствующий `factor` только когда в batch ровно одна multiply/divide операция
+и в тексте ровно одна однозначная same-direction фраза вида «в полтора/два/N раза
+больше/меньше»; compound/multiple/conflicting factor-фразы fail-closed остаются
+`factor_required`. `assignee` и известный магазин заполняются только в однородной
+batch из add, когда модель не передала эти поля нигде. Assignee распознаётся лишь
+как основной intent в начале trigger («Тихон должен купить…», с допустимым
+group-prefix `Имя:`) и не применяется при контрастной ответственности вроде
+«а я куплю…»/«а Настя должна…», поэтому смешанные поручения не переписывают
+весь batch. Магазинные fallback-паттерны покрывают те же канонические алиасы
+сервиса: Пятёрочка, SPAR, Магнит, Лента, Ашан в очевидных предложно-падежных/alias
+формах; несколько известных магазинов в одном trigger fail-closed не заполняют
+store. Явные значения, `general=true` и смешанные batch не переписываются. Это
+точечная страховка высокоценных русских паттернов, а не
+замена скилла/NLU и не общий парсер русской речи. `purchase_query` —
+структура `lists` + готовые `markdown`/`spoken_text` + `store_context`; пишет
+`deps.spoken_text` (см. ниже). В spoken multi-owner результатов каждый список
+помечается владельцем («В списке «Игорь»…»), а single-owner текст остаётся
+кратким без owner-label. По умолчанию запрос семейный; безопасный
+`assigned_only=true` оставляет только позиции, назначенные вызывающему («что я
+должен купить»). `purchase_store`, `purchase_share`.
+Мутирующие (`purchase_update`/`purchase_share`/`purchase_store`) в
+`SUBAGENT_EXCLUDED`, `purchase_query` сабагентам доступен.
+
+Дефолтный скилл `purchases` (миграция 0019, insert-if-absent — не
+перезаписывает кастомизированную строку; downgrade удаляет только
+нетронутую): shared (`owner_id NULL`, `role_ids=[]` = все роли),
+enabled, `ephemeral=true` (разовые фразы не пинают режим), алиасы
+`покупки`/`купить`, триггеры «надо купить», «закончился…», «что осталось
+купить», «я в пятерочке», «я ушел», «поделись списком», «должен купить»
+и др. Текст — `purchases/default_skill.py`: каноническая форма позиций,
+примеры извлечения («не два, а один» → set, «в два раза больше» →
+multiply, «не надо» → remove), таксономия категорий (овощи/фрукты,
+молочные, … прочее), цены, чек-лист-протокол, шаринг/назначение,
+правило «уточняй через ask_user_question, не угадывай». Если модель не
+передала категорию, `categories.py` детерминированно подставляет очевидную
+базовую категорию для стейплов (фрукты/овощи, молоко, напитки, хлеб,
+зубная паста/бытовая химия); явно переданная категория всегда важнее,
+неочевидное остаётся `прочее`.
+
+Spoken override — generic-механизм (не purchase-specific): у ToolDeps
+есть поле `spoken_text`; инструмент (сейчас — `purchase_query`) кладёт
+туда детерминированную разговорную сводку; runtime
+(`_apply_spoken_override`) дописывает ключ `spoken` в финальный text-парт
+сохранённого ответа (визуальный текст не меняется); `tts.spoken_override
+(parts)` читает его. Используется автоголосом voice_quick/voice_session
+(без chat_fast-сжатия — override уже компактен), голосовыми ответами
+Telegram и ручным `POST …/messages/{mid}/speak`. В failed/error reply override
+специально не прикрепляется: устаревшее содержимое списка не должно озвучиваться
+вместе с generic `ERROR_TEXT`. Рендер —
+`render.render_spoken`: «В Пятёрочке уже купили хлеб и молоко. Осталось
+купить два килограмма яблок и литр сока.»; 1 шт опускается, морфология
+практичная, не идеальная (предложный падеж магазина — эвристика).
+
+MVP-ограничения: никакого purchase-specific UI/REST — визуальный
+интерфейс это markdown (`render_markdown`: секции «Осталось купить»/
+«Уже купили» по спискам) плюс существующий `show_checklist`. Скилл
+показывает чек-лист только в не-голосовом чате и если ВСЕГО строк
+(включая уже купленные) ≤50 — это hard limit `show_checklist`
+(иначе markdown); id строки = строковая форма числового
+`purchase_items.id` (никогда не нумеровать заново), `checked` = bought;
+сабмит применяет только changed id: checked→`mark_bought`,
+unchecked→`mark_pending` по точному `item_id`. Чек-лист — снимок, не
+живой вид; устаревший id → структурный `not_found`, скилл предлагает
+показать актуальный список. Все прочие ограничения — общие для
+`show_checklist` (в TG только `item.text` без cells и т.п.).
+
 ## Лог сессии и компакшен
 
 Ответы ассистента хранят полный лог прогона: `thinking` (с provider-подписями
@@ -461,6 +658,13 @@ hw_id → отметка теряется.
 (`serialize_parts`/`deserialize_parts`). При реплее dangling-вызовы получают
 синтетический «[вызов прерван]» return, сиротские return'ы отбрасываются,
 легаси `{"type":"tool"}` (без args/result) пропускаются.
+
+У верхнеуровневого agent-run есть консервативный wall-clock timeout: ключ
+настроек `agent.run_timeout_seconds` (user → role → global, default 300).
+При срабатывании run завершается `failed` с диагностируемой ошибкой вида
+`agent run timed out after 300 seconds`; уже накопленные partial tool/text parts
+сохраняются в ответном сообщении вместе с обычным пользовательским
+`ERROR_TEXT`, как и при других ошибках рана.
 
 Авто-компакшен: при оценке контекста ≥75% от `params.context_length` биндинга
 capability `chat` старые сообщения сворачиваются в конспект (модель —

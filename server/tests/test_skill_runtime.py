@@ -810,3 +810,146 @@ async def test_subagent_depth_guard(engine) -> None:
     )
     res = await run_subagent(ctx, "g")  # type: ignore[arg-type]
     assert "error" in res
+
+
+# ---------- default purchases skill ----------
+
+
+def test_default_purchases_skill_parses_and_triggers() -> None:
+    from concierge.purchases.default_skill import DEFAULT_SKILL_CONTENT
+    from concierge.skills.format import match_trigger, parse_skill_md
+
+    doc = parse_skill_md(DEFAULT_SKILL_CONTENT)
+    assert doc.name == "purchases"
+    assert doc.description
+    assert doc.ephemeral is True
+    assert "покупки" in doc.aliases
+    assert "купить" in doc.aliases
+    for phrase in (
+        "надо купить молоко",
+        "что еще осталось купить?",
+        "купить не два, а один килограмм яблок",  # noqa: RUF001
+        "сделай молока в полтора раза больше",
+        "хлеб не надо",
+        "запланируй на завтра купить зубную пасту",
+        "покажи все списки",
+        "купил молоко за 89 рублей",
+        "я купил хлеб",
+        "она купила сыр",
+        "мы купили воду",
+        "я в пятерочке",
+        "я ушла из магазина",
+        "поделись списком с Настей",  # noqa: RUF001
+        "Тихон должен купить хлеб",
+    ):
+        assert match_trigger(doc.triggers, phrase), phrase
+    # The bare infinitive remains deliberately non-triggering: correction and
+    # completion forms above are much more purchase-specific than any «купить».
+    assert not match_trigger(doc.triggers, "купить хлеб")
+    assert "purchase_update" in doc.body
+    assert "show_checklist" in doc.body
+    assert "ask_user_question" in doc.body
+    assert "ВСЕГДА означает абсолютную замену" in doc.body
+    assert "name=`молоко`, factor=1.5" in doc.body
+    assert "price_kind=`total`" in doc.body
+    assert "Не подставляй 1/`шт` явно" in doc.body  # noqa: RUF001
+    assert "включая уже купленные" in doc.body
+    assert "Тихон должен купить яблоки и молоко в Пятёрочке" in doc.body
+    assert "один вызов `purchase_update`" in doc.body
+    assert "НЕ вызывай `purchase_update` повторно" in doc.body  # noqa: RUF001
+    assert "status=\"all\"" in doc.body
+    assert "unit_mismatch" in doc.body
+    assert "allow_incompatible_unit=true" in doc.body
+    assert "Никогда не передавай" in doc.body
+    assert "отдельные строки" in doc.body
+    assert "next_action=\"ask_user_question\"" in doc.body
+
+
+async def test_default_purchases_skill_shared_visibility(engine) -> None:
+    from concierge.purchases.default_skill import DEFAULT_SKILL_CONTENT
+
+    adult = await make_user("ps_adult", "adult")
+    guest = await make_user("ps_guest", "guest")
+    async with db.get_sessionmaker()() as session:
+        skill = await skill_service.create_skill(
+            session, None, DEFAULT_SKILL_CONTENT, created_by=adult.id, role_ids=[]
+        )
+        assert skill.enabled is True
+        assert skill.ephemeral is True
+        assert skill.role_ids == []
+        adult_skills = await skill_service.available_skills(session, adult)
+        guest_skills = await skill_service.available_skills(session, guest)
+    assert any(s.name == "purchases" for s in adult_skills)
+    # role_ids=[] is catalog visibility for every role, including guests; actual
+    # purchase tool calls are still denied by the built-in guest tool policy.
+    assert any(s.name == "purchases" for s in guest_skills)
+
+
+def test_migration_0019_seed_is_insert_if_absent_and_safe_downgrade(tmp_path) -> None:
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, text
+
+    from concierge.core import models as _models  # noqa: F401
+    from concierge.core.db import Base
+    from concierge.purchases.default_skill import DEFAULT_SKILL_CONTENT
+
+    migration_path = (
+        Path(__file__).parents[1] / "alembic" / "versions" / "0019_purchase_skill.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_0019", migration_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    engine_sync = create_engine(f"sqlite:///{tmp_path}/skillmigration.db")
+    with engine_sync.begin() as conn:
+        Base.metadata.create_all(conn)
+
+    def upgrade() -> None:
+        with engine_sync.begin() as conn:
+            context = MigrationContext.configure(conn)
+            with Operations.context(context):
+                module.upgrade()
+
+    def downgrade() -> None:
+        with engine_sync.begin() as conn:
+            context = MigrationContext.configure(conn)
+            with Operations.context(context):
+                module.downgrade()
+
+    upgrade()
+    upgrade()  # insert-if-absent: no duplicate and no overwrite
+    with engine_sync.begin() as conn:
+        rows = conn.execute(text("SELECT * FROM skills")).mappings().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["name"] == "purchases"
+        assert row["owner_id"] is None
+        assert json.loads(row["role_ids"]) == []
+        assert json.loads(row["aliases"]) == ["покупки", "купить"]
+        assert bool(row["enabled"]) is True
+        assert bool(row["ephemeral"]) is True
+        assert "надо купить" in json.loads(row["triggers"])
+
+        conn.execute(
+            text("UPDATE skills SET enabled = FALSE WHERE id = :id"),
+            {"id": row["id"]},
+        )
+    downgrade()
+    with engine_sync.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM skills")).scalar_one() == 1
+        conn.execute(
+            text(
+                "UPDATE skills SET enabled = TRUE, content = :content "
+                "WHERE name = 'purchases'"
+            ),
+            {"content": DEFAULT_SKILL_CONTENT},
+        )
+    downgrade()
+    with engine_sync.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM skills")).scalar_one() == 0

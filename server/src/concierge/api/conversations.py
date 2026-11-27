@@ -648,8 +648,11 @@ async def speak_message(
     msg = await session.get(Message, message_id)
     if msg is None or msg.conversation_id != conv.id:
         raise HTTPException(404, "message not found")
+    override = tts.spoken_override(msg.parts)
     text = tts.speechify(
-        "\n\n".join(
+        override
+        if override is not None
+        else "\n\n".join(
             str(p.get("text", ""))
             for p in msg.parts
             if p.get("type") == "text"

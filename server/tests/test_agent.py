@@ -305,6 +305,147 @@ async def test_agent_run_persists_and_uses_tools(
     assert {"search_messages", "current_datetime"} <= tool_names
 
 
+async def test_agent_run_timeout_marks_failed_and_preserves_parts(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    from concierge.agent import tools as agent_tools
+    from concierge.agent.runtime import ERROR_TEXT, RUN_TIMEOUT_KEY
+    from concierge.settings import service as settings_service
+    from concierge.settings.models import SettingScope
+
+    async def slow_datetime() -> str:
+        await asyncio.sleep(0.2)
+        return "too late"
+
+    slow_datetime.__name__ = "current_datetime"
+    monkeypatch.setitem(agent_tools.CORE_TOOLS, "current_datetime", slow_datetime)
+    await _add_provider(
+        "chat",
+        params={
+            "call_tools": ["current_datetime"],
+            "custom_output_text": "should not finish",
+        },
+    )
+    user = await make_user("timeout_user", "adult")
+    async with db.get_sessionmaker()() as session:
+        await settings_service.set_value(
+            session,
+            SettingScope.user,
+            user.id,
+            RUN_TIMEOUT_KEY,
+            0.05,
+            user.id,
+        )
+    token = await login(client, "timeout_user")
+    cid = await _make_conv(client, token)
+    msg = await _post_and_collect(client, token, cid, "привет")
+
+    run = await _run_and_wait(cid, msg["id"])
+    assert run.status == "failed"
+    assert run.error is not None
+    assert "agent run timed out after 0.05 seconds" in run.error
+
+    async with db.get_sessionmaker()() as session:
+        reply = (
+            await session.execute(
+                select(Message).where(Message.run_id == run.id)
+            )
+        ).scalar_one()
+    assert any(
+        part.get("type") == "tool_call" and part.get("name") == "current_datetime"
+        for part in reply.parts
+    )
+    assert {"type": "text", "text": ERROR_TEXT} in reply.parts
+
+
+async def test_trigger_text_propagated_to_tool_deps(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    from pydantic_ai import RunContext
+
+    from concierge.agent import tools as agent_tools
+    from concierge.agent.tools import ToolDeps
+
+    captured: list[str] = []
+
+    async def capture_trigger(ctx: RunContext[ToolDeps]) -> str:
+        captured.append(ctx.deps.trigger_text)
+        return "captured"
+
+    capture_trigger.__name__ = "capture_trigger"
+    monkeypatch.setitem(agent_tools.CORE_TOOLS, "capture_trigger", capture_trigger)
+    await _add_provider(
+        "chat",
+        params={
+            "call_tools": ["capture_trigger"],
+            "custom_output_text": "готово",
+        },
+    )
+    await make_user("trigger_text_user", "adult")
+    token = await login(client, "trigger_text_user")
+    cid = await _make_conv(client, token)
+    text = "сделай молока в полтора раза больше"
+    msg = await _post_and_collect(client, token, cid, text)
+    await _run_and_wait(cid, msg["id"])
+    assert captured == [text]
+
+
+async def test_error_reply_does_not_reuse_spoken_override(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    from pydantic_ai import RunContext
+
+    from concierge.agent import tools as agent_tools
+    from concierge.agent.runtime import RUN_TIMEOUT_KEY
+    from concierge.agent.tools import ToolDeps
+    from concierge.purchases import service as purchase_service
+    from concierge.purchases.tools import purchase_query
+    from concierge.settings import service as settings_service
+    from concierge.settings.models import SettingScope
+
+    async def slow_purchase_query(ctx: RunContext[ToolDeps]) -> dict:
+        result = await purchase_query(ctx)
+        await asyncio.sleep(0.2)
+        return result
+
+    slow_purchase_query.__name__ = "slow_purchase_query"
+    monkeypatch.setitem(
+        agent_tools.CORE_TOOLS, "slow_purchase_query", slow_purchase_query
+    )
+    await _add_provider(
+        "chat",
+        params={
+            "call_tools": ["slow_purchase_query"],
+            "custom_output_text": "не должен завершиться",
+        },
+    )
+    user = await make_user("spoken_error_user", "adult")
+    async with db.get_sessionmaker()() as session:
+        added = await purchase_service.add(session, user.id, "молоко", 1, general=True)
+        assert added.ok
+        await settings_service.set_value(
+            session,
+            SettingScope.user,
+            user.id,
+            RUN_TIMEOUT_KEY,
+            0.05,
+            user.id,
+        )
+    token = await login(client, "spoken_error_user")
+    cid = await _make_conv(client, token)
+    msg = await _post_and_collect(client, token, cid, "покажи покупки")
+    run = await _run_and_wait(cid, msg["id"])
+    assert run.status == "failed"
+
+    async with db.get_sessionmaker()() as session:
+        reply = (
+            await session.execute(select(Message).where(Message.run_id == run.id))
+        ).scalar_one()
+    final_texts = [part for part in reply.parts if part.get("type") == "text"]
+    assert final_texts
+    assert all("spoken" not in part for part in final_texts)
+
+
 async def test_ask_model_permission_gate() -> None:
     from concierge.agent import tools
 

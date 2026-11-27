@@ -13,6 +13,7 @@ import io
 import logging
 import re
 import wave
+from typing import Any
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -123,6 +124,17 @@ def sanitize_reply_text(text: str) -> str:
     text = _ATT_MARKER_RE.sub("", text)
     text = "\n".join(line.rstrip() for line in text.splitlines())
     return _BLANKS_RE.sub("\n\n", text).strip()
+
+
+def spoken_override(parts: list[dict[str, Any]]) -> str | None:
+    """Authoritative spoken rendering stored on the final text part, if any."""
+    for part in reversed(parts):
+        if part.get("type") != "text":
+            continue
+        spoken = part.get("spoken")
+        if isinstance(spoken, str) and spoken.strip():
+            return spoken.strip()
+    return None
 
 
 def speechify(text: str) -> str:

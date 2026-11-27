@@ -262,3 +262,209 @@ async def test_voice_quick_tts_compressed(
         assert att.derived["spoken"] == "краткая выжимка"
     # The full answer stays in the text reply.
     assert msgs[-2]["parts"][-1]["text"] == long_reply
+
+
+def test_spoken_override_extracts_last_text_part() -> None:
+    parts = [
+        {"type": "text", "text": "первый"},
+        {"type": "tool_return", "name": "purchase_query", "content": {}},
+        {"type": "text", "text": "визуальный", "spoken": "короткая речь"},
+    ]
+    assert tts.spoken_override(parts) == "короткая речь"
+    assert tts.spoken_override([{"type": "text", "text": "без поля"}]) is None
+    assert tts.spoken_override([]) is None
+
+
+async def test_spoken_override_saved_on_reply_text_part(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    import json
+
+    from pydantic_ai.models.function import DeltaToolCall, DeltaToolCalls
+
+    from concierge.purchases import service as purchase_service
+    from tests.test_skill_runtime import _use_function_model
+
+    calls = 0
+
+    async def fn(messages, agent_info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield DeltaToolCalls(
+                {
+                    0: DeltaToolCall(
+                        name="purchase_query",
+                        json_args=json.dumps({"general": True, "status": "all"}),
+                        tool_call_id="pq1",
+                    )
+                }
+            )
+        else:
+            yield "визуальный список ниже"
+
+    await _use_function_model(monkeypatch, fn)
+    user = await make_user("tts_override", "adult")
+    async with db.get_sessionmaker()() as session:
+        added = await purchase_service.add(
+            session, user.id, "молоко", 2, "шт", general=True
+        )
+        assert added.ok is True
+    token = await login(client, "tts_override")
+    cid = await _conv(client, token)
+    await _post(client, token, cid, "покажи покупки")
+    await get_runtime().wait_idle()
+    msgs = await _msgs(client, token, cid)
+    reply = msgs[-1]
+    texts = [p for p in reply["parts"] if p["type"] == "text"]
+    assert texts[-1]["text"] == "визуальный список ниже"
+    assert "осталось купить" in texts[-1]["spoken"]
+    assert tts.spoken_override(reply["parts"]) == texts[-1]["spoken"]
+
+
+async def test_voice_session_reply_uses_spoken_override(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    await make_user("tts_line", "adult")
+    token = await login(client, "tts_line")
+    cid = await _conv(client, token)
+    async with db.get_sessionmaker()() as session:
+        conv = await session.get(Conversation, cid)
+        assert conv is not None
+        conv.settings = {"voice_session": True}
+        await session.commit()
+
+    captured: dict[str, str] = {}
+
+    async def fake_synthesize(session, user, text: str):
+        captured["text"] = text
+        return b"audio", "audio/wav"
+
+    async def fail_compressor(session, user, text: str) -> str:
+        raise AssertionError("generic spoken_version must not paraphrase overrides")
+
+    monkeypatch.setattr(tts, "synthesize_speech", fake_synthesize)
+    monkeypatch.setattr(tts, "spoken_version", fail_compressor)
+    async with db.get_sessionmaker()() as session:
+        from concierge.auth.models import User
+
+        user = await session.get(User, 1)
+        await get_runtime()._maybe_tts_reply(
+            cid, user, "визуальный markdown", spoken_override="точная речь"
+        )
+    assert captured["text"] == "точная речь"
+
+
+async def test_manual_speak_uses_saved_spoken_override(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    from concierge.conversations.models import Message
+
+    await make_user("tts_manual", "adult")
+    token = await login(client, "tts_manual")
+    cid = await _conv(client, token)
+    async with db.get_sessionmaker()() as session:
+        msg = Message(
+            conversation_id=cid,
+            seq=1,
+            author_kind="assistant",
+            author_id=None,
+            parts=[
+                {
+                    "type": "text",
+                    "text": "полный markdown",
+                    "spoken": "короткая закупочная речь",
+                }
+            ],
+        )
+        session.add(msg)
+        await session.commit()
+        mid = msg.id
+
+    captured: dict[str, str] = {}
+
+    async def fake_synthesize(session, user, text: str):
+        captured["text"] = text
+        return b"audio", "audio/wav"
+
+    monkeypatch.setattr(tts, "synthesize_speech", fake_synthesize)
+    resp = await client.post(
+        f"/conversations/{cid}/messages/{mid}/speak", headers=auth(token)
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["text"] == "короткая закупочная речь"
+
+
+async def test_telegram_voice_reply_uses_spoken_override(
+    engine, monkeypatch
+) -> None:
+    from concierge.channels.telegram.sink import TelegramSink
+    from concierge.conversations import service as conversation_service
+    from concierge.conversations.models import Message, Run
+    from concierge.settings import service as settings_service
+    from concierge.settings.models import SettingScope
+    from tests.test_telegram import FakeOutbox
+
+    user = await make_user("tts_tg", "adult")
+    async with db.get_sessionmaker()() as session:
+        conv = await conversation_service.create_conversation(
+            session, user, "personal", "", []
+        )
+        assert conv is not None
+        trigger = Message(
+            conversation_id=conv.id,
+            seq=1,
+            author_kind="user",
+            author_id=user.id,
+            parts=[{"type": "text", "text": "что купить?"}],
+        )
+        session.add(trigger)
+        await session.flush()
+        run = Run(
+            conversation_id=conv.id,
+            trigger_message_id=trigger.id,
+            status="done",
+        )
+        session.add(run)
+        await session.commit()
+        run_id, conv_id = run.id, conv.id
+        await settings_service.set_value(
+            session,
+            SettingScope.user,
+            user.id,
+            "telegram.voice_reply",
+            "always",
+            user.id,
+        )
+
+    captured: dict[str, str] = {}
+
+    async def fake_synthesize(session, user, text: str):
+        captured["text"] = text
+        return b"audio", "audio/wav"
+
+    async def fail_compressor(session, user, text: str) -> str:
+        raise AssertionError("generic spoken_version must not paraphrase overrides")
+
+    async def fail_ogg(data: bytes, mime: str) -> bytes:
+        raise RuntimeError("no ffmpeg needed in this unit test")
+
+    monkeypatch.setattr(tts, "synthesize_speech", fake_synthesize)
+    monkeypatch.setattr(tts, "spoken_version", fail_compressor)
+    monkeypatch.setattr("concierge.channels.telegram.sink._to_ogg", fail_ogg)
+    sink = TelegramSink(FakeOutbox(), 100, 0)
+    await sink._maybe_voice_reply(
+        {
+            "conversation_id": conv_id,
+            "run_id": run_id,
+            "text": "визуальный markdown",
+            "parts": [
+                {
+                    "type": "text",
+                    "text": "визуальный markdown",
+                    "spoken": "точная телеграм-речь",
+                }
+            ],
+        }
+    )
+    assert captured["text"] == "точная телеграм-речь"

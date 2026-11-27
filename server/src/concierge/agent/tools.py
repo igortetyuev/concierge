@@ -45,14 +45,19 @@ class ToolDeps:
     user_id: int
     conversation_id: int
     run_id: int | None = None
-    # Seq of the message that triggered the run; tools that act on "the
-    # messages before this request" use it as the cutoff (0 = no cutoff).
+    # Seq/text of the message that triggered the run; tools that act on "the
+    # messages before this request" use the seq as the cutoff (0 = no cutoff),
+    # while conservative deterministic fallbacks may inspect the exact text.
     trigger_seq: int = 0
+    trigger_text: str = ""
     documents: list[dict[str, Any]] = field(default_factory=list)
     # `choice` parts appended to the reply (ask_user_question).
     choices: list[dict[str, Any]] = field(default_factory=list)
     # `checklist` parts appended to the reply (show_checklist).
     checklists: list[dict[str, Any]] = field(default_factory=list)
+    # Optional authoritative spoken rendering for the final text reply
+    # (tools such as purchase_query use it for deterministic list speech).
+    spoken_text: str | None = None
     # Name/id of the skill driving this run (pinned or ephemeral), if any;
     # interactive parts record them so their answers can re-apply it.
     skill_name: str | None = None
@@ -60,6 +65,11 @@ class ToolDeps:
     # run_subagent recursion guard + per-run parallelism cap (5).
     subagent_depth: int = 0
     subagent_slots: asyncio.Semaphore | None = None
+    # Per-run purchase mutation loop protection. These objects never touch the
+    # DB and therefore reset naturally for the next user message/run.
+    purchase_update_count: int = 0
+    purchase_update_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    purchase_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 async def search_messages(
@@ -851,6 +861,9 @@ SUBAGENT_EXCLUDED = {
     "pause_scheduled_task",
     "resume_scheduled_task",
     "cancel_scheduled_task",
+    "purchase_update",
+    "purchase_share",
+    "purchase_store",
 }
 
 
@@ -936,6 +949,17 @@ def _schedule_tools() -> list[Callable[..., Any]]:
     ]
 
 
+def _purchase_tools() -> list[Callable[..., Any]]:
+    from concierge.purchases import tools as purchase_tools
+
+    return [
+        purchase_tools.purchase_update,
+        purchase_tools.purchase_query,
+        purchase_tools.purchase_store,
+        purchase_tools.purchase_share,
+    ]
+
+
 _CORE_TOOL_LIST: list[Callable[..., Any]] = [
     search_messages,
     current_datetime,
@@ -948,6 +972,7 @@ _CORE_TOOL_LIST: list[Callable[..., Any]] = [
     invite_member,
     forward_messages,
     *_schedule_tools(),
+    *_purchase_tools(),
 ]
 
 CORE_TOOLS: dict[str, Callable[..., Any]] = {

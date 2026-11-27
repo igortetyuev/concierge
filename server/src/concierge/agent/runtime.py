@@ -74,6 +74,39 @@ COMPACTION_INSTRUCTIONS = (
 )
 
 ERROR_TEXT = "Произошла ошибка при обработке запроса."
+RUN_TIMEOUT_KEY = "agent.run_timeout_seconds"
+RUN_TIMEOUT_DEFAULT = 300.0
+
+
+class AgentRunTimeoutError(TimeoutError):
+    """Wall-clock timeout for one agent run."""
+
+
+def _run_timeout_seconds(value: Any) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return RUN_TIMEOUT_DEFAULT
+    return seconds if seconds > 0 else RUN_TIMEOUT_DEFAULT
+
+
+def _apply_spoken_override(
+    parts: list[dict[str, Any]], spoken_text: str | None
+) -> list[dict[str, Any]]:
+    """Attach a tool-provided spoken rendering to the final visible text part.
+
+    The display text itself is deliberately unchanged; consumers that speak the
+    message read the extra `spoken` key through media.tts.spoken_override.
+    """
+    if spoken_text is None or not spoken_text.strip():
+        return parts
+    out = [dict(part) for part in parts]
+    for idx in range(len(out) - 1, -1, -1):
+        part = out[idx]
+        if part.get("type") == "text" and str(part.get("text", "")).strip():
+            part["spoken"] = spoken_text.strip()
+            break
+    return out
 
 
 class AgentRuntime:
@@ -363,6 +396,7 @@ class AgentRuntime:
                 user_id=user.id,
                 conversation_id=conv.id,
                 trigger_seq=trigger.seq,
+                trigger_text=trigger_text,
                 subagent_slots=asyncio.Semaphore(5),
                 skill_name=(
                     ephemeral_state[0].name
@@ -408,6 +442,16 @@ class AgentRuntime:
             )
             return
 
+        # Read the timeout after the initial setup transaction has closed and
+        # only once this message will really execute a model run; no-op
+        # mention-gate checks should stay as short as possible.
+        async with get_sessionmaker()() as settings_session:
+            run_timeout_seconds = _run_timeout_seconds(
+                await settings_service.get_value(
+                    settings_session, user, RUN_TIMEOUT_KEY, RUN_TIMEOUT_DEFAULT
+                )
+            )
+
         agent = Agent(
             bound.model,
             deps_type=ToolDeps,
@@ -430,7 +474,28 @@ class AgentRuntime:
                 message_history=history,
                 deps=deps,
             ) as stream:
-                async for event in stream:
+                stream_iter = stream.__aiter__()
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + run_timeout_seconds
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise AgentRunTimeoutError(
+                            "agent run timed out after "
+                            f"{run_timeout_seconds:g} seconds"
+                        )
+                    try:
+                        async with asyncio.timeout(remaining):
+                            event = await stream_iter.__anext__()
+                    except TimeoutError as exc:
+                        if loop.time() < deadline:
+                            raise  # provider/tool timeout unrelated to the run deadline
+                        raise AgentRunTimeoutError(
+                            "agent run timed out after "
+                            f"{run_timeout_seconds:g} seconds"
+                        ) from exc
+                    except StopAsyncIteration:
+                        break
                     # First chunk of a text part arrives as PartStartEvent,
                     # subsequent chunks as PartDeltaEvent(TextPartDelta).
                     if (
@@ -605,10 +670,16 @@ class AgentRuntime:
                         output = str(event.result.output)
                         usage = dataclasses.asdict(event.result.usage)
         except Exception as exc:
-            log.exception("run %s failed", run_id)
+            if isinstance(exc, AgentRunTimeoutError):
+                log.warning("run %s timed out", run_id)
+            else:
+                log.exception("run %s failed", run_id)
             await self._finish(
                 run_id, conv.id, "failed", error=str(exc), quiet=hidden_reply
             )
+            # Failure replies must not speak a stale purchase/list snapshot that
+            # happened to be collected before the error; the visible error is
+            # generic and has no authoritative domain-specific spoken form.
             error_parts = [*run_parts, {"type": "text", "text": ERROR_TEXT}]
             await self._save_reply(
                 session_maker,
@@ -637,6 +708,7 @@ class AgentRuntime:
                 *run_parts,
                 {"type": "text", "text": output},
             ]
+        stored_parts = _apply_spoken_override(stored_parts, deps.spoken_text)
         await self._save_reply(
             session_maker,
             conv.id,
@@ -660,7 +732,12 @@ class AgentRuntime:
             )
         else:
             await self._ensure_title(conv.id, user, trigger.parts)
-            await self._maybe_tts_reply(conv.id, user, output)
+            await self._maybe_tts_reply(
+                conv.id,
+                user,
+                output,
+                spoken_override=tts.spoken_override(stored_parts),
+            )
 
     async def _member_names(
         self, session: AsyncSession, conversation_id: int
@@ -1089,7 +1166,12 @@ class AgentRuntime:
         )
 
     async def _maybe_tts_reply(
-        self, conversation_id: int, user: User, text: str
+        self,
+        conversation_id: int,
+        user: User,
+        text: str,
+        *,
+        spoken_override: str | None = None,
     ) -> None:
         """Voice sessions get the reply voiced through the `tts` capability
         as a follow-up audio message; on a speaker line (voice_session)
@@ -1115,7 +1197,13 @@ class AgentRuntime:
                     return
                 if not enabled:
                     return
-                spoken = await tts.spoken_version(session, user, text)
+                if spoken_override is not None and spoken_override.strip():
+                    # A tool-provided override is already the authoritative
+                    # spoken rendering: don't let the generic compressor
+                    # paraphrase away exact list state.
+                    spoken = tts.speechify(spoken_override)[: tts.TTS_TEXT_MAX]
+                else:
+                    spoken = await tts.spoken_version(session, user, text)
                 if not spoken:
                     return
                 audio = await tts.synthesize_speech(session, user, spoken)

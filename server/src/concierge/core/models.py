@@ -22,6 +22,12 @@ from concierge.conversations.models import (
 from concierge.core.audit import AuditEvent
 from concierge.media.models import Attachment
 from concierge.memory.models import MemoryItem
+from concierge.purchases.models import (
+    PurchaseContext,
+    PurchaseItem,
+    PurchaseList,
+    PurchaseListMember,
+)
 from concierge.schedule.models import ScheduledJob
 from concierge.settings.models import Setting, SettingScope
 from concierge.skills.models import Skill, SkillFile
@@ -39,6 +45,10 @@ __all__ = [
     "MemoryItem",
     "Message",
     "ModelProvider",
+    "PurchaseContext",
+    "PurchaseItem",
+    "PurchaseList",
+    "PurchaseListMember",
     "Role",
     "Run",
     "ScheduledJob",
