@@ -451,7 +451,14 @@ marked_at)` через `analytics_import_rows`: таблица заранее н
 первый append создаёт её с угаданными типами (date/marked_at текст →
 строгие ISO-форматы, сортировка лексикографическая); актуальное состояние
 — самая свежая строка по marked_at. Правка текста задания учителем меняет
-hw_id → отметка теряется.
+hw_id → отметка теряется. После рана runtime детерминированно сверяет
+сохранённые tool_call/tool_return: успешный append `analytics_import_rows`
+в `school_homework_done` (structured return для `sandbox.school_homework_done`,
+`inserted == len(rows)` и >0) обновляет `items[].checked` во всех видимых
+assistant checklist-карточках текущей беседы с теми же `hw_id` и шлёт
+`message.updated`; `submissions`/`followups` и прочие поля не трогаются.
+Поэтому текстовые «сделана/не сделана …» меняют галочки уже показанной
+домашки в PWA; ошибки сверки только логируются и не ломают ответ агента.
 
 ## Списки покупок (purchases/)
 

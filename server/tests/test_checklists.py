@@ -1,6 +1,8 @@
 """Checklists: show_checklist tool, /checklist submit endpoint, runtime."""
 
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +13,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import (
@@ -21,9 +24,11 @@ from pydantic_ai.models.function import (
 from pydantic_ai.settings import ModelSettings
 
 from concierge.agent import providers
+from concierge.agent.models import McpServer
 from concierge.agent.providers import BoundModel
 from concierge.agent.runtime import get_runtime
 from concierge.agent.tools import ToolDeps
+from concierge.core import db
 from tests.conftest import auth, login, make_user
 from tests.test_agent import _make_conv, _post_and_collect
 from tests.test_skill_runtime import (
@@ -32,6 +37,8 @@ from tests.test_skill_runtime import (
     _messages,
     _runs,
 )
+
+MCP_ANALYTICS_PATH = str(Path(__file__).parent / "mcp_analytics_stub.py")
 
 
 async def _bind_fn(monkeypatch, sf) -> tuple[list[Any], list[Any]]:
@@ -336,6 +343,211 @@ async def test_checklist_flow(
     assert '"ru": true' in joined and '"math": false' in joined
     assert '"changed": ["ru", "math", "3"]' in joined
     assert f"[Пользователь: {user.display_name}]" in infos[-1].instructions
+
+
+def _school_homework_fn(fail_after_import: bool = False):
+    """Show one homework item, then write done state through analytics MCP.
+
+    With `fail_after_import` the model blows up right after the successful
+    import tool return, so the run lands in the runtime failure branch.
+    """
+
+    async def fn(messages: Any, agent_info: Any):
+        last = messages[-1] if messages else None
+        if isinstance(last, ModelRequest) and any(
+            isinstance(p, ToolReturnPart) for p in last.parts
+        ):
+            if fail_after_import and any(
+                isinstance(p, ToolReturnPart)
+                and p.tool_name == "analytics_import_rows"
+                for p in last.parts
+            ):
+                raise RuntimeError("model exploded after import")
+            yield "готово"
+            return
+        prompt = ""
+        for msg in reversed(messages):
+            if not isinstance(msg, ModelRequest):
+                continue
+            prompt = next(
+                (
+                    str(p.content)
+                    for p in msg.parts
+                    if isinstance(p, UserPromptPart)
+                ),
+                "",
+            )
+            if prompt:
+                break
+        if "не сделана" in prompt or "сделана" in prompt:
+            done = "не сделана" not in prompt
+            args = {
+                "table": "school_homework_done",
+                "rows": [
+                    {
+                        "hw_id": "hwgeo",
+                        "date": "2026-01-02",
+                        "subject": "География",
+                        "done": done,
+                        "marked_by": "test",
+                        "marked_at": "2026-01-02T12:00:00",
+                    }
+                ],
+                "mode": "append",
+            }
+            yield DeltaToolCalls(
+                {
+                    0: DeltaToolCall(
+                        name="analytics_import_rows",
+                        json_args=json.dumps(args),
+                        tool_call_id="hw-import",
+                    )
+                }
+            )
+        else:
+            args = {
+                "items": [
+                    {"id": "hwgeo", "text": "География", "checked": False}
+                ],
+                "title": "Домашка",
+            }
+            yield DeltaToolCalls(
+                {
+                    0: DeltaToolCall(
+                        name="show_checklist",
+                        json_args=json.dumps(args),
+                        tool_call_id="show-hw",
+                    )
+                }
+            )
+
+    return fn
+
+
+async def test_homework_text_command_syncs_rendered_checklist(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    await _bind_fn(monkeypatch, _school_homework_fn())
+    async with db.get_sessionmaker()() as session:
+        session.add(
+            McpServer(
+                name="analytics",
+                transport="stdio",
+                command=f"{sys.executable} {MCP_ANALYTICS_PATH}",
+                enabled=True,
+            )
+        )
+        await session.commit()
+    await make_user("hwschool", "adult")
+    token = await login(client, "hwschool")
+    cid = await _make_conv(client, token)
+
+    await _post_and_collect(client, token, cid, "покажи домашку")
+    await get_runtime().wait_idle()
+    msgs = await _messages(cid)
+    reply = next(
+        m for m in msgs if any(p.get("type") == "checklist" for p in m.parts)
+    )
+    cl = next(p for p in reply.parts if p["type"] == "checklist")
+    assert cl["items"][0]["id"] == "hwgeo"
+    assert cl["items"][0]["checked"] is False
+
+    await _post_and_collect(client, token, cid, "сделана география")
+    await get_runtime().wait_idle()
+    msgs = await _messages(cid)
+    orig = next(m for m in msgs if m.id == reply.id)
+    cl = next(p for p in orig.parts if p["type"] == "checklist")
+    assert cl["items"][0]["checked"] is True
+
+    import_reply = msgs[-1]
+    assert import_reply.author_kind == "assistant"
+    call = next(
+        p
+        for p in import_reply.parts
+        if p.get("type") == "tool_call"
+        and p.get("name") == "analytics_import_rows"
+    )
+    call_args = call["args"]
+    if isinstance(call_args, str):
+        call_args = json.loads(call_args)
+    assert call_args["table"] == "school_homework_done"
+    ret = next(
+        p
+        for p in import_reply.parts
+        if p.get("type") == "tool_return"
+        and p.get("tool_call_id") == call["tool_call_id"]
+    )
+    assert isinstance(ret["content"], dict)
+    assert ret["content"]["table"] == "sandbox.school_homework_done"
+    assert ret["content"]["inserted"] == 1
+
+    await _post_and_collect(client, token, cid, "не сделана география")
+    await get_runtime().wait_idle()
+    msgs = await _messages(cid)
+    orig = next(m for m in msgs if m.id == reply.id)
+    cl = next(p for p in orig.parts if p["type"] == "checklist")
+    assert cl["items"][0]["checked"] is False
+    assert all(r.status == "done" for r in await _runs(cid))
+
+
+async def test_homework_failed_run_syncs_rendered_checklist(
+    engine, client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """A run that fails after a successful import still reconciles via error_parts."""
+    await _bind_fn(monkeypatch, _school_homework_fn(fail_after_import=True))
+    async with db.get_sessionmaker()() as session:
+        session.add(
+            McpServer(
+                name="analytics",
+                transport="stdio",
+                command=f"{sys.executable} {MCP_ANALYTICS_PATH}",
+                enabled=True,
+            )
+        )
+        await session.commit()
+    await make_user("hwfail", "adult")
+    token = await login(client, "hwfail")
+    cid = await _make_conv(client, token)
+
+    await _post_and_collect(client, token, cid, "покажи домашку")
+    await get_runtime().wait_idle()
+    msgs = await _messages(cid)
+    reply = next(
+        m for m in msgs if any(p.get("type") == "checklist" for p in m.parts)
+    )
+    cl = next(p for p in reply.parts if p["type"] == "checklist")
+    assert cl["items"][0]["checked"] is False
+
+    await _post_and_collect(client, token, cid, "сделана география")
+    await get_runtime().wait_idle()
+
+    runs = await _runs(cid)
+    import_run = runs[-1]
+    assert import_run.status == "failed"
+    assert import_run.error is not None
+    assert "model exploded after import" in import_run.error
+
+    msgs = await _messages(cid)
+    error_reply = next(m for m in reversed(msgs) if m.run_id == import_run.id)
+    call = next(
+        p
+        for p in error_reply.parts
+        if p.get("type") == "tool_call"
+        and p.get("name") == "analytics_import_rows"
+    )
+    ret = next(
+        p
+        for p in error_reply.parts
+        if p.get("type") == "tool_return"
+        and p.get("tool_call_id") == call["tool_call_id"]
+    )
+    assert isinstance(ret["content"], dict)
+    assert ret["content"]["table"] == "sandbox.school_homework_done"
+    assert ret["content"]["inserted"] == 1
+
+    orig = next(m for m in msgs if m.id == reply.id)
+    cl = next(p for p in orig.parts if p["type"] == "checklist")
+    assert cl["items"][0]["checked"] is True
 
 
 async def test_checklist_submit_hides_realtime_traffic(

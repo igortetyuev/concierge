@@ -691,6 +691,7 @@ class AgentRuntime:
                 deps.checklists,
                 hidden=hidden_reply,
             )
+            await self._sync_homework_checklists(conv.id, error_parts)
             if hidden_reply:
                 await self._embed_checklist_followup(conv.id, cl_ref, error_parts)
             return
@@ -719,6 +720,7 @@ class AgentRuntime:
             deps.checklists,
             hidden=hidden_reply,
         )
+        await self._sync_homework_checklists(conv.id, stored_parts)
         if hidden_reply:
             await self._embed_checklist_followup(
                 conv.id,
@@ -1061,6 +1063,38 @@ class AgentRuntime:
         if not quiet:
             await self._run_status(
                 conversation_id, run_id, status, error=error
+            )
+
+    async def _sync_homework_checklists(
+        self, conversation_id: int, parts: list[dict[str, Any]]
+    ) -> None:
+        """Reconcile homework checklist cards with confirmed analytics writes.
+
+        The write itself is already committed by the MCP analytics service; a
+        reconciliation failure must never turn the user-facing agent run into
+        a failure.
+        """
+        try:
+            from concierge.skills.checklists import (
+                extract_school_homework_done_updates,
+                sync_school_homework_done_checklists,
+            )
+
+            updates = extract_school_homework_done_updates(parts)
+            if not updates:
+                return
+            changed = await sync_school_homework_done_checklists(
+                conversation_id, updates
+            )
+            if changed:
+                log.info(
+                    "homework checklists synced conv=%s messages=%s",
+                    conversation_id,
+                    changed,
+                )
+        except Exception:
+            log.exception(
+                "homework checklist sync failed conv=%s", conversation_id
             )
 
     async def _save_reply(
