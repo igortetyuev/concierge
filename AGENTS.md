@@ -98,8 +98,28 @@ package_dir (`__init__.py` → `os.add_dll_directory`), поэтому
 (источник: `site-packages\nvidia\{cublas,cudnn,cuda_nvrtc}\bin\*.dll`);
 иначе STT падает 500 «Library cublas64_12.dll is not found».
 На сервере провайдер `speaches-lan` (kind `openai-compatible`, base_url
-`http://<win-host>:8000/v1`); capability `stt` привязана к нему как `whisper-1`
-(params `{"language": "ru"}`).
+`http://<win-host>:8000/v1`) оставлен для отката STT (`whisper-1`,
+params `{"language": "ru"}`).
+
+### GigaAM-v4 STT
+
+С 2026-11-27 рабочий `stt` переведён на сайдкар `gigaamstt` (репо
+`~/projects/gigaamstt`, на хосте — `C:\Users\<user>\gigaamstt`, venv
+`gigaamstt-venv`, cwd `gigaamstt-home`, лог `gigaamstt.log`):
+`http://<win-host>:8300/v1`, OpenAI-совместимый
+`POST /v1/audio/transcriptions`. Модель `ai-sage/GigaAM-v4` revision `rnnt`
+(двухголовая raw+e2e; в ответ идёт formatted/e2e с пунктуацией), инференс CPU
+(torch `2.15.0+cpu`, `GIGAAM_DEVICE=cpu`, `GIGAAM_THREADS=6`; CPU выбран
+по образцу остальных torch-сайдкаров и его достаточно: ~1 с на 11-секундном
+тестовом клипе после прогрева, ~3 с на 47-секундном longform). Файлы
+до 30 с транскрибируются целиком, длиннее — bundled VAD + batch longform. Вход декодируется soundfile, системный ffmpeg не нужен
+(concierge и так шлёт 16 kHz mono wav). Автозапуск — задача
+`Concierge-GigaamStt` по образцу остальных (`run-gigaamstt.ps1`,
+`PYTHONUTF8=1`, `HF_HUB_OFFLINE=1` после первого прогрева), firewall-правило
+`GigaAM STT 8300`. На сервере провайдер `gigaam-lan` (kind
+`openai-compatible`, base_url `http://<win-host>:8300/v1`); capability `stt`
+привязана к нему как `gigaam-v4` (params `{"language": "ru"}`). Откат —
+вернуть binding на `speaches-lan`/`whisper-1`; Speaches продолжает работать.
 Whisper на тишине/шуме выдаёт галлюцинации из субтитров («Субтитры сделал
 DimaTorzok», «Редактор субтитров …», «Thanks for watching») — `media/stt.py`
 `_hallucinated` отбрасывает транскрипт целиком, если все сегменты — известные
